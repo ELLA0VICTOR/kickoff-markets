@@ -1,76 +1,70 @@
 import { useMemo, useState } from 'react'
-import { PoolActivityTable } from './components/activity/PoolActivityTable'
-import { PositionsTable } from './components/activity/PositionsTable'
-import { HookTimeline } from './components/hook/HookTimeline'
-import { TerminalShell } from './components/layout/TerminalShell'
-import { MarketMetrics } from './components/markets/MarketMetrics'
-import { MatchMarketTable } from './components/markets/MatchMarketTable'
-import { MatchRoom } from './components/markets/MatchRoom'
-import { ProductHeader } from './components/overview/ProductHeader'
-import { TradeTicket } from './components/trading/TradeTicket'
-import { SectionHeader } from './components/ui/SectionHeader'
-import { StatusPill } from './components/ui/StatusPill'
+import { AppTopbar } from './components/product/AppTopbar'
+import { type HomeTab, MarketTabs } from './components/product/MarketTabs'
+import { MarketBoard } from './components/product/MarketBoard'
+import { MarketPage } from './components/product/MarketPage'
 import { activityRows, hookSteps, markets, positions } from './data/markets'
+import type { MatchMarket } from './data/markets'
+
+function matchesTab(market: MatchMarket, tab: HomeTab) {
+  if (tab === 'All') return true
+  if (tab === 'Live') return market.status === 'live'
+  if (tab === 'Upcoming') return market.status === 'open'
+  if (tab === 'Settling') return market.status === 'settling'
+
+  return true
+}
+
+function matchesSearch(market: MatchMarket, query: string) {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return true
+
+  return [market.sides[0].name, market.sides[1].name, market.sides[0].code, market.sides[1].code, market.stage, market.pool]
+    .join(' ')
+    .toLowerCase()
+    .includes(normalized)
+}
 
 function App() {
+  const [query, setQuery] = useState('')
+  const [activeTab, setActiveTab] = useState<HomeTab>('All')
   const [selectedMarketId, setSelectedMarketId] = useState(markets[0].id)
+  const [detailMarketId, setDetailMarketId] = useState<string>()
 
-  const selectedMarket = useMemo(
-    () => markets.find((market) => market.id === selectedMarketId) ?? markets[0],
-    [selectedMarketId],
+  const filteredMarkets = useMemo(
+    () => markets.filter((market) => matchesTab(market, activeTab) && matchesSearch(market, query)),
+    [activeTab, query],
   )
 
+  const selectedMarket = useMemo(
+    () => markets.find((market) => market.id === (detailMarketId || selectedMarketId)) ?? markets[0],
+    [detailMarketId, selectedMarketId],
+  )
+
+  function selectMarket(id: string) {
+    setSelectedMarketId(id)
+    setDetailMarketId(id)
+  }
+
   return (
-    <TerminalShell>
-      <ProductHeader selectedMarket={selectedMarket} marketCount={markets.length} />
+    <div className="app-shell">
+      <AppTopbar query={query} onQueryChange={setQuery} />
 
-      <div className="mt-6">
-        <MarketMetrics market={selectedMarket} />
-      </div>
-
-      <section className="mt-6" id="markets">
-        <SectionHeader
-          number="1)"
-          title="Match Markets - Live Rooms, Pool Fees, Conviction"
-          action={
-            <StatusPill variant="live" dot>
-              auto-refresh 15s
-            </StatusPill>
-          }
+      {detailMarketId ? (
+        <MarketPage
+          activityRows={activityRows}
+          hookSteps={hookSteps}
+          market={selectedMarket}
+          positions={positions}
+          onBack={() => setDetailMarketId(undefined)}
         />
-        <MatchMarketTable
-          markets={markets}
-          onSelectMarket={setSelectedMarketId}
-          selectedMarketId={selectedMarketId}
-        />
-      </section>
-
-      <section className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <MatchRoom market={selectedMarket} />
-        <TradeTicket market={selectedMarket} />
-      </section>
-
-      <div className="mt-6">
-        <SectionHeader number="2)" title="Hook Control Surface - Fee Logic, Oracle State, Settlement Lane" />
-        <HookTimeline market={selectedMarket} steps={hookSteps} />
-      </div>
-
-      <section className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_480px]">
-        <div id="activity">
-          <SectionHeader
-            number="3)"
-            title="Pool Activity - Receipt Visible X Layer Flow"
-            action={<StatusPill variant="success">verified</StatusPill>}
-          />
-          <PoolActivityTable rows={activityRows} />
-        </div>
-
-        <div id="liquidity">
-          <SectionHeader number="4)" title="Positions - User Exposure And Claims" />
-          <PositionsTable rows={positions} />
-        </div>
-      </section>
-    </TerminalShell>
+      ) : (
+        <>
+          <MarketTabs activeTab={activeTab} onTabChange={setActiveTab} />
+          <MarketBoard markets={filteredMarkets} selectedMarketId={selectedMarketId} onMarketSelect={selectMarket} />
+        </>
+      )}
+    </div>
   )
 }
 
