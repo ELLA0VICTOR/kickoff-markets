@@ -17,22 +17,6 @@ Most prediction-market products treat a match as a static yes/no question. Kicko
 
 The result is a product that turns World Cup attention into visible X Layer transactions: room creation, trades, liquidity adds, hook updates, and claims.
 
-## Status
-
-| Layer | Status |
-| --- | --- |
-| Frontend app | Built |
-| Wallet connection | Built |
-| X Layer network switch | Built |
-| Demo-mode trade and LP receipts | Built |
-| Contract-ready transaction calls | Built |
-| `KickoffMarkets.sol` receipt registry | Built |
-| `MatchClockHook.sol` phase-fee surface | Built |
-| X Layer contract deployment | Pending |
-| Full Uniswap v4 pool routing | Pending |
-
-The app runs in demo mode until `VITE_KICKOFF_MARKETS_ADDRESS` is configured. Once the contract address is set, room creation, trading, liquidity, and claim actions submit wallet transactions.
-
 ## Technical Flow
 
 ```mermaid
