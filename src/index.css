@@ -310,7 +310,7 @@ button.network-chip:hover,
 
 .how-modal {
   display: grid;
-  width: min(700px, 100%);
+  width: min(600px, 100%);
   max-height: calc(100vh - 28px);
 }
 
@@ -337,9 +337,9 @@ button.network-chip:hover,
 .how-visual {
   display: grid;
   grid-template-columns: 0.55fr minmax(260px, 1.35fr) 0.55fr;
-  gap: 16px;
-  min-height: 306px;
-  padding: 18px 56px 12px;
+  gap: 12px;
+  min-height: 240px;
+  padding: 14px 48px 10px;
   overflow: hidden;
   border-bottom: 1px solid var(--border-soft);
   background: var(--header-bg);
@@ -356,7 +356,7 @@ button.network-chip:hover,
   display: grid;
   align-content: start;
   height: 100%;
-  padding: 16px 12px;
+  padding: 12px 10px;
   color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
@@ -373,9 +373,9 @@ button.network-chip:hover,
 .how-market-card {
   display: grid;
   align-content: start;
-  gap: 13px;
+  gap: 10px;
   height: 100%;
-  padding: 15px 16px 14px;
+  padding: 13px 14px 12px;
 }
 
 .how-card-topline,
@@ -407,14 +407,14 @@ button.network-chip:hover,
 }
 
 .how-card-brand .brand-mark {
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
 }
 
 .how-market-card h3 {
   margin: 0;
   color: var(--text-bright);
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1.15;
 }
 
@@ -426,8 +426,8 @@ button.network-chip:hover,
 
 .how-token {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   margin-right: -7px;
   place-items: center;
   border: 1px solid var(--bg);
@@ -463,8 +463,8 @@ button.network-chip:hover,
 
 .how-body {
   display: grid;
-  gap: 18px;
-  padding: 24px 32px 30px;
+  gap: 14px;
+  padding: 20px 28px 24px;
 }
 
 .how-progress {
@@ -507,7 +507,7 @@ button.network-chip:hover,
   margin: 0;
   color: var(--text-bright);
   font-family: var(--sans);
-  font-size: 28px;
+  font-size: 25px;
   font-weight: 500;
   line-height: 1.1;
 }
@@ -525,7 +525,7 @@ button.network-chip:hover,
 }
 
 .how-actions button {
-  min-height: 48px;
+  min-height: 44px;
   border: 1px solid var(--accent-dim);
   color: var(--value-bright);
   background: rgba(16, 185, 129, 0.08);
@@ -778,6 +778,36 @@ button.network-chip:hover,
   gap: 0;
 }
 
+.integration-strip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 24px 22px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-darker);
+}
+
+.integration-strip span,
+.action-notice span {
+  color: var(--label);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.integration-strip strong,
+.action-notice strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.integration-strip.is-onchain {
+  border-color: var(--accent-dim);
+  background: rgba(16, 185, 129, 0.08);
+}
+
 .back-button {
   width: max-content;
   margin: 22px 24px;
@@ -994,6 +1024,31 @@ button.network-chip:hover,
   text-align: right;
 }
 
+.action-notice {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  padding: 12px;
+  background: var(--bg-darker);
+}
+
+.action-notice.state-success {
+  border-color: var(--accent-dim);
+}
+
+.action-notice.state-error {
+  border-color: var(--danger);
+}
+
+.action-notice a {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  gap: 6px;
+  color: var(--value-bright);
+  font-size: 12px;
+}
+
 .simple-grid,
 .hook-grid,
 .activity-list {
@@ -1032,6 +1087,30 @@ button.network-chip:hover,
 .hook-step strong {
   color: var(--value-bright);
   font-size: 22px;
+}
+
+.info-panel button {
+  width: max-content;
+  min-height: 32px;
+  border: 1px solid var(--accent-dim);
+  padding: 0 10px;
+  color: var(--value-bright);
+  background: rgba(16, 185, 129, 0.08);
+  cursor: pointer;
+}
+
+.info-panel input {
+  width: 100%;
+  height: 42px;
+  border: 1px solid var(--border);
+  outline: 0;
+  padding: 0 10px;
+  color: var(--value-bright);
+  background: var(--bg-darker);
+}
+
+.liquidity-ticket {
+  box-shadow: inset 0 0 0 1px var(--accent-dim);
 }
 
 .hook-step.is-active {
@@ -1077,6 +1156,20 @@ button.network-chip:hover,
   display: grid;
   place-items: center;
   color: var(--muted);
+}
+
+.form-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.primary-action:disabled {
+  cursor: default;
+  color: var(--muted);
+  border-color: var(--border);
+  background: var(--panel-2);
+  opacity: 1;
 }
 
 .site-footer {

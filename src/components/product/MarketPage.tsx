@@ -1,8 +1,10 @@
-import { ArrowLeft, CheckCircle2, Clock3, Droplets, Radio, ShieldCheck } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, Clock3, Droplets, ExternalLink, Radio, ShieldCheck } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useMemo, useState } from 'react'
+import { explorerTxUrl } from '../../config/contracts'
 import type { ActivityRow, HookStep, MatchMarket, PositionRow } from '../../data/markets'
 import { formatCurrency, formatNumber } from '../../lib/format'
+import type { ActionStatus } from '../../types/integration'
 import { MatchPoster } from './MatchPoster'
 
 type DetailTab = 'Trade' | 'Liquidity' | 'Hook' | 'Activity'
@@ -10,17 +12,34 @@ type DetailTab = 'Trade' | 'Liquidity' | 'Hook' | 'Activity'
 type MarketPageProps = {
   market: MatchMarket
   activityRows: ActivityRow[]
+  actionStatus: ActionStatus
+  contractReady: boolean
   hookSteps: HookStep[]
   positions: PositionRow[]
+  onAddLiquidity: (market: MatchMarket, sideIndex: number, amount: string) => void
   onBack: () => void
+  onClaim: (market: MatchMarket) => void
+  onPlaceTrade: (market: MatchMarket, sideIndex: number, amount: string) => void
 }
 
 const detailTabs: DetailTab[] = ['Trade', 'Liquidity', 'Hook', 'Activity']
 
-export function MarketPage({ market, activityRows, hookSteps, positions, onBack }: MarketPageProps) {
+export function MarketPage({
+  market,
+  activityRows,
+  actionStatus,
+  contractReady,
+  hookSteps,
+  positions,
+  onAddLiquidity,
+  onBack,
+  onClaim,
+  onPlaceTrade,
+}: MarketPageProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('Trade')
   const [sideIndex, setSideIndex] = useState<0 | 1>(0)
   const [amount, setAmount] = useState('250')
+  const [liquidityAmount, setLiquidityAmount] = useState('1000')
   const selectedSide = market.sides[sideIndex]
   const amountNumber = Number(amount) || 0
 
@@ -32,6 +51,15 @@ export function MarketPage({ market, activityRows, hookSteps, positions, onBack 
         <ArrowLeft size={17} strokeWidth={1.8} />
         Markets
       </button>
+
+      <div className={contractReady ? 'integration-strip is-onchain' : 'integration-strip'}>
+        <span>{contractReady ? 'On-chain mode' : 'Demo mode'}</span>
+        <strong>
+          {contractReady
+            ? 'Trades and liquidity submit to the configured KickoffMarkets contract.'
+            : 'Set VITE_KICKOFF_MARKETS_ADDRESS to route actions to X Layer.'}
+        </strong>
+      </div>
 
       <section className="detail-hero">
         <div className="detail-visual">
@@ -101,29 +129,44 @@ export function MarketPage({ market, activityRows, hookSteps, positions, onBack 
               <Row label="Receipts" value={estimatedReceipts.toFixed(2)} />
               <Row label="Fee" value={`${market.hookFeeBps} bps`} />
             </div>
-            <button className="primary-action" type="button">
+            <button className="primary-action" type="button" onClick={() => onPlaceTrade(market, sideIndex, amount)}>
               Place trade
             </button>
+            <ActionNotice status={actionStatus} />
           </aside>
         </section>
       ) : null}
 
       {activeTab === 'Liquidity' ? (
         <section className="simple-grid">
-          {market.sides.map((side) => (
+          {market.sides.map((side, index) => (
             <div className="info-panel" key={side.code}>
               <span>{side.code}</span>
               <strong>{formatCurrency(side.liquidity)}</strong>
               <small>{side.conviction}% conviction</small>
+              <button type="button" onClick={() => onAddLiquidity(market, index, liquidityAmount)}>
+                Add LP
+              </button>
             </div>
           ))}
+          <div className="info-panel liquidity-ticket">
+            <span>LP amount</span>
+            <input value={liquidityAmount} onChange={(event) => setLiquidityAmount(event.target.value)} inputMode="decimal" />
+            <small>USDC routed as liquidity receipt</small>
+          </div>
           {positions.map((position) => (
             <div className="info-panel" key={`${position.market}-${position.side}`}>
               <span>{position.side}</span>
               <strong>{position.pnl}</strong>
               <small>{position.status}</small>
+              {position.status === 'claimable' ? (
+                <button type="button" onClick={() => onClaim(market)}>
+                  Claim
+                </button>
+              ) : null}
             </div>
           ))}
+          <ActionNotice status={actionStatus} />
         </section>
       ) : null}
 
@@ -153,6 +196,25 @@ export function MarketPage({ market, activityRows, hookSteps, positions, onBack 
         </section>
       ) : null}
     </main>
+  )
+}
+
+function ActionNotice({ status }: { status: ActionStatus }) {
+  if (status.state === 'idle') return null
+
+  const txUrl = explorerTxUrl(status.txHash)
+
+  return (
+    <div className={`action-notice state-${status.state}`}>
+      <span>{status.state}</span>
+      <strong>{status.message}</strong>
+      {txUrl ? (
+        <a href={txUrl} target="_blank" rel="noreferrer">
+          View tx
+          <ExternalLink size={13} strokeWidth={1.8} />
+        </a>
+      ) : null}
+    </div>
   )
 }
 

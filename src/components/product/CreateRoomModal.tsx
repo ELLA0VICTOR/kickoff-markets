@@ -5,7 +5,7 @@ import type { MatchMarket } from '../../data/markets'
 type CreateRoomModalProps = {
   open: boolean
   onClose: () => void
-  onCreate: (market: MatchMarket) => void
+  onCreate: (market: MatchMarket) => Promise<void> | void
 }
 
 function cleanCode(value: string) {
@@ -16,11 +16,15 @@ export function CreateRoomModal({ open, onClose, onCreate }: CreateRoomModalProp
   const [teamA, setTeamA] = useState('Nigeria')
   const [teamB, setTeamB] = useState('Portugal')
   const [kickoff, setKickoff] = useState('19:00 UTC')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string>()
 
   if (!open) return null
 
-  function submitRoom(event: FormEvent<HTMLFormElement>) {
+  async function submitRoom(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setPending(true)
+    setError(undefined)
 
     const sideA = teamA.trim() || 'Team A'
     const sideB = teamB.trim() || 'Team B'
@@ -28,29 +32,35 @@ export function CreateRoomModal({ open, onClose, onCreate }: CreateRoomModalProp
     const codeB = cleanCode(sideB)
     const createdAt = Date.now()
 
-    onCreate({
-      id: `${codeA.toLowerCase()}-${codeB.toLowerCase()}-${createdAt}`,
-      stage: 'Custom room',
-      kickoff: kickoff.trim() || 'TBD',
-      phase: 'pre-match',
-      minute: 'T-60m',
-      score: '0 - 0',
-      pool: `${codeA}/${codeB}-v4`,
-      status: 'open',
-      liquidity: 0,
-      volume: 0,
-      traders: 0,
-      hookFeeBps: 18,
-      baseFeeBps: 18,
-      xLayerTx: 0,
-      note: 'Room drafted locally. Deploying the pool will publish hook config and liquidity receipts on X Layer.',
-      sides: [
-        { code: codeA, name: sideA, price: 0.5, change: 0, liquidity: 0, conviction: 50 },
-        { code: codeB, name: sideB, price: 0.5, change: 0, liquidity: 0, conviction: 50 },
-      ],
-      sparkline: [50, 50, 50, 50, 50, 50],
-    })
-    onClose()
+    try {
+      await onCreate({
+        id: `${codeA.toLowerCase()}-${codeB.toLowerCase()}-${createdAt}`,
+        stage: 'Custom room',
+        kickoff: kickoff.trim() || 'TBD',
+        phase: 'pre-match',
+        minute: 'T-60m',
+        score: '0 - 0',
+        pool: `${codeA}/${codeB}-v4`,
+        status: 'open',
+        liquidity: 0,
+        volume: 0,
+        traders: 0,
+        hookFeeBps: 18,
+        baseFeeBps: 18,
+        xLayerTx: 0,
+        note: 'Room drafted locally. Deploying the pool will publish hook config and liquidity receipts on X Layer.',
+        sides: [
+          { code: codeA, name: sideA, price: 0.5, change: 0, liquidity: 0, conviction: 50 },
+          { code: codeB, name: sideB, price: 0.5, change: 0, liquidity: 0, conviction: 50 },
+        ],
+        sparkline: [50, 50, 50, 50, 50, 50],
+      })
+      onClose()
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : 'Room creation failed.')
+    } finally {
+      setPending(false)
+    }
   }
 
   return (
@@ -82,8 +92,9 @@ export function CreateRoomModal({ open, onClose, onCreate }: CreateRoomModalProp
             <span>Kickoff</span>
             <input value={kickoff} onChange={(event) => setKickoff(event.target.value)} />
           </label>
-          <button className="primary-action" type="submit">
-            Create room
+          {error ? <p className="form-error">{error}</p> : null}
+          <button className="primary-action" type="submit" disabled={pending}>
+            {pending ? 'Creating' : 'Create room'}
           </button>
         </form>
       </section>

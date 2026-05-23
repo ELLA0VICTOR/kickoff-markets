@@ -12,6 +12,25 @@ dist
 dist-ssr
 *.local
 
+# Environment and deployment secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.secret
+*.keystore
+secrets.json
+wallet.json
+
+# Contract build/deployment outputs
+artifacts
+cache
+broadcast
+out
+deployments
+.openzeppelin
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

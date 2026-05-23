@@ -6,8 +6,10 @@ import { HowItWorksModal } from './components/product/HowItWorksModal'
 import { type HomeTab, MarketTabs } from './components/product/MarketTabs'
 import { MarketBoard } from './components/product/MarketBoard'
 import { MarketPage } from './components/product/MarketPage'
-import { activityRows, hookSteps, markets, positions } from './data/markets'
-import type { MatchMarket } from './data/markets'
+import { isKickoffContractConfigured } from './config/contracts'
+import { activityRows as seedActivityRows, hookSteps, markets, positions as seedPositions } from './data/markets'
+import type { ActivityRow, MatchMarket, PositionRow } from './data/markets'
+import { addLiquidityTx, claimTx, createRoomTx, placeTradeTx } from './lib/contractClient'
 import {
   connectInjectedWallet,
   getWalletProvider,
@@ -18,10 +20,9 @@ import {
   type WalletSession,
   type WalletStatus,
 } from './lib/wallet'
+import type { ActionStatus } from './types/integration'
 
-const portfolioPools = new Set(positions.map((position) => position.market))
-
-function matchesTab(market: MatchMarket, tab: HomeTab) {
+function matchesTab(market: MatchMarket, tab: HomeTab, portfolioPools: Set<string>) {
   if (tab === 'All') return true
   if (tab === 'Live') return market.status === 'live'
   if (tab === 'Upcoming') return market.status === 'open'
@@ -43,6 +44,8 @@ function matchesSearch(market: MatchMarket, query: string) {
 
 function App() {
   const [marketList, setMarketList] = useState<MatchMarket[]>(markets)
+  const [activityList, setActivityList] = useState<ActivityRow[]>(seedActivityRows)
+  const [positionList, setPositionList] = useState<PositionRow[]>(seedPositions)
   const [query, setQuery] = useState('')
   const [activeTab, setActiveTab] = useState<HomeTab>('All')
   const [selectedMarketId, setSelectedMarketId] = useState(markets[0].id)
@@ -52,6 +55,7 @@ function App() {
   const [walletSession, setWalletSession] = useState<WalletSession>()
   const [walletStatus, setWalletStatus] = useState<WalletStatus>('idle')
   const [walletMenuOpen, setWalletMenuOpen] = useState(false)
+  const [actionStatus, setActionStatus] = useState<ActionStatus>({ state: 'idle' })
 
   useEffect(() => {
     const provider = getWalletProvider()
@@ -110,9 +114,11 @@ function App() {
     return () => window.removeEventListener('pointerdown', closeMenu)
   }, [walletMenuOpen])
 
+  const portfolioPools = useMemo(() => new Set(positionList.map((position) => position.market)), [positionList])
+
   const filteredMarkets = useMemo(
-    () => marketList.filter((market) => matchesTab(market, activeTab) && matchesSearch(market, query)),
-    [activeTab, marketList, query],
+    () => marketList.filter((market) => matchesTab(market, activeTab, portfolioPools) && matchesSearch(market, query)),
+    [activeTab, marketList, portfolioPools, query],
   )
 
   const selectedMarket = useMemo(
@@ -130,6 +136,7 @@ function App() {
   function selectMarket(id: string) {
     setSelectedMarketId(id)
     setDetailMarketId(id)
+    setActionStatus({ state: 'idle' })
   }
 
   async function connectWallet() {
@@ -189,11 +196,196 @@ function App() {
     setWalletMenuOpen(false)
   }
 
-  function createRoom(market: MatchMarket) {
-    setMarketList((current) => [market, ...current])
-    setSelectedMarketId(market.id)
-    setDetailMarketId(market.id)
-    setActiveTab('All')
+  async function ensureWalletForContract() {
+    if (!isKickoffContractConfigured()) return undefined
+
+    const provider = getWalletProvider()
+    if (!provider) {
+      throw new Error('No injected wallet found. Install OKX Wallet or another EVM wallet.')
+    }
+
+    let session = walletSession
+    if (!session) {
+      session = await connectInjectedWallet(provider)
+      setWalletSession(session)
+      setWalletStatus('connected')
+    }
+
+    if (!isXLayer(session.chainId)) {
+      await switchToXLayer(provider)
+      const refreshed = await readInjectedWallet(provider)
+      if (refreshed) {
+        setWalletSession(refreshed)
+        session = refreshed
+      }
+    }
+
+    return { provider, address: session.address }
+  }
+
+  function addActivity(kind: string, market: MatchMarket, amount: string, txHash?: string, status: ActivityRow['status'] = 'confirmed') {
+    const time = new Date().toISOString().slice(11, 19)
+    const shortTx = txHash ? `${txHash.slice(0, 10)}...` : `local-${Date.now().toString().slice(-6)}`
+
+    setActivityList((current) => [
+      {
+        time,
+        kind,
+        market: market.pool,
+        wallet: walletSession?.address ? shortAddress(walletSession.address) : 'demo.wallet',
+        amount,
+        fee: `${market.hookFeeBps} bps`,
+        tx: shortTx,
+        status,
+      },
+      ...current,
+    ])
+  }
+
+  function bumpMarketStats(market: MatchMarket, amount: number, sideIndex?: number, liquidity = false) {
+    setMarketList((current) =>
+      current.map((item) => {
+        if (item.id !== market.id) return item
+
+        const sides = item.sides.map((side, index) => {
+          if (index !== sideIndex) return side
+
+          return {
+            ...side,
+            liquidity: liquidity ? side.liquidity + amount : side.liquidity,
+            conviction: Math.min(99, side.conviction + (liquidity ? 1 : 2)),
+          }
+        }) as MatchMarket['sides']
+
+        return {
+          ...item,
+          liquidity: liquidity ? item.liquidity + amount : item.liquidity,
+          volume: item.volume + amount,
+          traders: item.traders + 1,
+          xLayerTx: item.xLayerTx + 1,
+          sides,
+        }
+      }),
+    )
+  }
+
+  async function createRoom(market: MatchMarket) {
+    setActionStatus({ state: 'pending', message: 'Creating match room...' })
+    try {
+      const wallet = await ensureWalletForContract()
+      const result = wallet ? await createRoomTx(wallet.provider, wallet.address, market) : { mode: 'demo' as const }
+
+      setMarketList((current) => [market, ...current])
+      setSelectedMarketId(market.id)
+      setDetailMarketId(market.id)
+      setActiveTab('All')
+      addActivity('ROOM', market, 'created', result.txHash)
+      setActionStatus({
+        state: 'success',
+        mode: result.mode,
+        txHash: result.txHash,
+        message:
+          result.mode === 'onchain'
+            ? 'Room creation submitted to X Layer.'
+            : 'Room created locally. Configure VITE_KICKOFF_MARKETS_ADDRESS for on-chain rooms.',
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Room creation failed.'
+      setActionStatus({ state: 'error', message })
+      if (error instanceof Error) {
+        throw error
+      }
+      throw new Error(message, { cause: error })
+    }
+  }
+
+  async function placeTrade(market: MatchMarket, sideIndex: number, amount: string) {
+    setActionStatus({ state: 'pending', message: 'Preparing trade receipt...' })
+    try {
+      const wallet = await ensureWalletForContract()
+      const result = wallet ? await placeTradeTx(wallet.provider, wallet.address, market, sideIndex, amount) : { mode: 'demo' as const }
+      const numericAmount = Number(amount.replaceAll(',', '')) || 0
+      const side = market.sides[sideIndex]
+
+      bumpMarketStats(market, numericAmount, sideIndex)
+      setPositionList((current) => [
+        {
+          market: market.pool,
+          side: side.name,
+          size: `$${numericAmount.toFixed(2)}`,
+          entry: `$${side.price.toFixed(2)}`,
+          mark: `$${side.price.toFixed(2)}`,
+          pnl: '$0.00',
+          status: 'open',
+        },
+        ...current,
+      ])
+      addActivity('SWAP', market, `$${numericAmount.toFixed(2)} USDC`, result.txHash)
+      setActionStatus({
+        state: 'success',
+        mode: result.mode,
+        txHash: result.txHash,
+        message: result.mode === 'onchain' ? 'Trade submitted to X Layer.' : 'Demo trade recorded locally.',
+      })
+    } catch (error) {
+      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Trade failed.' })
+    }
+  }
+
+  async function addLiquidity(market: MatchMarket, sideIndex: number, amount: string) {
+    setActionStatus({ state: 'pending', message: 'Preparing liquidity receipt...' })
+    try {
+      const wallet = await ensureWalletForContract()
+      const result = wallet ? await addLiquidityTx(wallet.provider, wallet.address, market, sideIndex, amount) : { mode: 'demo' as const }
+      const numericAmount = Number(amount.replaceAll(',', '')) || 0
+      const side = market.sides[sideIndex]
+
+      bumpMarketStats(market, numericAmount, sideIndex, true)
+      setPositionList((current) => [
+        {
+          market: market.pool,
+          side: `${side.name} LP`,
+          size: `$${numericAmount.toFixed(2)}`,
+          entry: `${market.hookFeeBps} bps`,
+          mark: 'active',
+          pnl: '$0.00',
+          status: 'open',
+        },
+        ...current,
+      ])
+      addActivity('LP ADD', market, `$${numericAmount.toFixed(2)} USDC`, result.txHash)
+      setActionStatus({
+        state: 'success',
+        mode: result.mode,
+        txHash: result.txHash,
+        message: result.mode === 'onchain' ? 'Liquidity submitted to X Layer.' : 'Demo liquidity recorded locally.',
+      })
+    } catch (error) {
+      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Liquidity add failed.' })
+    }
+  }
+
+  async function claim(market: MatchMarket) {
+    setActionStatus({ state: 'pending', message: 'Preparing claim receipt...' })
+    try {
+      const wallet = await ensureWalletForContract()
+      const result = wallet ? await claimTx(wallet.provider, wallet.address, market) : { mode: 'demo' as const }
+
+      setPositionList((current) =>
+        current.map((position) =>
+          position.market === market.pool && position.status === 'claimable' ? { ...position, status: 'open' } : position,
+        ),
+      )
+      addActivity('CLAIM', market, 'claim receipt', result.txHash)
+      setActionStatus({
+        state: 'success',
+        mode: result.mode,
+        txHash: result.txHash,
+        message: result.mode === 'onchain' ? 'Claim submitted to X Layer.' : 'Demo claim recorded locally.',
+      })
+    } catch (error) {
+      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Claim failed.' })
+    }
   }
 
   return (
@@ -218,11 +410,16 @@ function App() {
 
       {detailMarketId ? (
         <MarketPage
-          activityRows={activityRows}
+          activityRows={activityList.filter((row) => row.market === selectedMarket.pool)}
+          actionStatus={actionStatus}
+          contractReady={isKickoffContractConfigured()}
           hookSteps={hookSteps}
           market={selectedMarket}
-          positions={positions}
+          positions={positionList.filter((position) => position.market === selectedMarket.pool)}
+          onAddLiquidity={addLiquidity}
           onBack={() => setDetailMarketId(undefined)}
+          onClaim={claim}
+          onPlaceTrade={placeTrade}
         />
       ) : (
         <>
