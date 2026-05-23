@@ -5,9 +5,10 @@ type MarketBoardProps = {
   markets: MatchMarket[]
   selectedMarketId: string
   onMarketSelect: (id: string) => void
+  onCreateClick: () => void
 }
 
-export function MarketBoard({ markets, selectedMarketId, onMarketSelect }: MarketBoardProps) {
+export function MarketBoard({ markets, selectedMarketId, onMarketSelect, onCreateClick }: MarketBoardProps) {
   return (
     <main className="market-board">
       <div className="board-header">
@@ -17,7 +18,7 @@ export function MarketBoard({ markets, selectedMarketId, onMarketSelect }: Marke
         </div>
         <div className="board-actions">
           <div className="feed-chip">X Layer feed</div>
-          <button className="create-button" type="button">
+          <button className="create-button" type="button" onClick={onCreateClick}>
             Create room
           </button>
         </div>
