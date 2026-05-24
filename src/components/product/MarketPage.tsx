@@ -2,7 +2,7 @@ import { ArrowLeft, CheckCircle2, Clock3, Droplets, ExternalLink, Radio, ShieldC
 import type { ReactNode } from 'react'
 import { useMemo, useState } from 'react'
 import { explorerTxUrl } from '../../config/contracts'
-import type { ActivityRow, HookStep, MatchMarket, PositionRow } from '../../data/markets'
+import type { ActivityRow, HookStep, MarketPhase, MarketSettlement, MatchMarket, PositionRow } from '../../data/markets'
 import { formatCurrency, formatNumber } from '../../lib/format'
 import type { ActionStatus } from '../../types/integration'
 import { MatchPoster } from './MatchPoster'
@@ -16,10 +16,13 @@ type MarketPageProps = {
   contractReady: boolean
   hookSteps: HookStep[]
   positions: PositionRow[]
+  walletAddress?: string
   onAddLiquidity: (market: MatchMarket, sideIndex: number, amount: string) => void
   onBack: () => void
   onClaim: (market: MatchMarket) => void
   onPlaceTrade: (market: MatchMarket, sideIndex: number, amount: string) => void
+  onSettle: (market: MatchMarket, outcome: Exclude<MarketSettlement, 'open'>, score: string, clock: string) => void
+  onUpdatePhase: (market: MatchMarket, phase: MarketPhase, clock: string, score: string, feeBps: number) => void
 }
 
 const detailTabs: DetailTab[] = ['Trade', 'Liquidity', 'Hook', 'Activity']
@@ -31,19 +34,44 @@ export function MarketPage({
   contractReady,
   hookSteps,
   positions,
+  walletAddress,
   onAddLiquidity,
   onBack,
   onClaim,
   onPlaceTrade,
+  onSettle,
+  onUpdatePhase,
 }: MarketPageProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('Trade')
   const [sideIndex, setSideIndex] = useState<0 | 1>(0)
   const [amount, setAmount] = useState('250')
   const [liquidityAmount, setLiquidityAmount] = useState('1000')
+  const [clockDraft, setClockDraft] = useState({
+    feeBps: String(market.hookFeeBps),
+    marketId: market.id,
+    clock: market.minute,
+    score: market.score,
+  })
+  const clock = clockDraft.marketId === market.id ? clockDraft.clock : market.minute
+  const feeBps = clockDraft.marketId === market.id ? clockDraft.feeBps : String(market.hookFeeBps)
+  const score = clockDraft.marketId === market.id ? clockDraft.score : market.score
   const selectedSide = market.sides[sideIndex]
   const amountNumber = Number(amount) || 0
+  const canManage =
+    Boolean(walletAddress) && walletAddress?.toLowerCase() === market.creator.toLowerCase() && market.settlement === 'open'
+  const roomOpen = market.settlement === 'open'
 
   const estimatedReceipts = useMemo(() => amountNumber / selectedSide.price, [amountNumber, selectedSide.price])
+
+  function updateClockDraft(next: Partial<typeof clockDraft>) {
+    setClockDraft({
+      feeBps,
+      marketId: market.id,
+      clock,
+      score,
+      ...next,
+    })
+  }
 
   return (
     <main className="market-page">
@@ -53,11 +81,11 @@ export function MarketPage({
       </button>
 
       <div className={contractReady ? 'integration-strip is-onchain' : 'integration-strip'}>
-        <span>{contractReady ? 'On-chain mode' : 'Demo mode'}</span>
+        <span>{contractReady ? 'Escrow live' : 'Contract setup'}</span>
         <strong>
           {contractReady
-            ? 'Trades and liquidity submit to the configured KickoffMarkets contract.'
-            : 'Set VITE_KICKOFF_MARKETS_ADDRESS to route actions to X Layer.'}
+            ? 'Trades, liquidity, settlement, and claims use X Layer contracts.'
+            : 'Deploy KickoffMarkets with collateral, then set both contract addresses.'}
         </strong>
       </div>
 
@@ -129,7 +157,12 @@ export function MarketPage({
               <Row label="Receipts" value={estimatedReceipts.toFixed(2)} />
               <Row label="Fee" value={`${market.hookFeeBps} bps`} />
             </div>
-            <button className="primary-action" type="button" onClick={() => onPlaceTrade(market, sideIndex, amount)}>
+            <button
+              className="primary-action"
+              type="button"
+              disabled={!contractReady || !roomOpen}
+              onClick={() => onPlaceTrade(market, sideIndex, amount)}
+            >
               Place trade
             </button>
             <ActionNotice status={actionStatus} />
@@ -144,7 +177,7 @@ export function MarketPage({
               <span>{side.code}</span>
               <strong>{formatCurrency(side.liquidity)}</strong>
               <small>{side.conviction}% conviction</small>
-              <button type="button" onClick={() => onAddLiquidity(market, index, liquidityAmount)}>
+              <button type="button" disabled={!contractReady || !roomOpen} onClick={() => onAddLiquidity(market, index, liquidityAmount)}>
                 Add LP
               </button>
             </div>
@@ -160,7 +193,7 @@ export function MarketPage({
               <strong>{position.pnl}</strong>
               <small>{position.status}</small>
               {position.status === 'claimable' ? (
-                <button type="button" onClick={() => onClaim(market)}>
+                <button type="button" disabled={!contractReady} onClick={() => onClaim(market)}>
                   Claim
                 </button>
               ) : null}
@@ -179,20 +212,67 @@ export function MarketPage({
               <small>{step.fee}</small>
             </div>
           ))}
+          <div className="info-panel oracle-panel">
+            <span>Match Clock</span>
+            <input value={clock} onChange={(event) => updateClockDraft({ clock: event.target.value })} aria-label="Match clock" />
+            <input value={score} onChange={(event) => updateClockDraft({ score: event.target.value })} aria-label="Score" />
+            <input
+              value={feeBps}
+              onChange={(event) => updateClockDraft({ feeBps: event.target.value })}
+              aria-label="Fee bps"
+              inputMode="numeric"
+            />
+            <div className="oracle-actions">
+              <button
+                type="button"
+                disabled={!canManage}
+                onClick={() => onUpdatePhase(market, 'live', clock, score, Number(feeBps) || market.hookFeeBps)}
+              >
+                Set live
+              </button>
+              <button
+                type="button"
+                disabled={!canManage}
+                onClick={() => onUpdatePhase(market, 'halftime', clock, score, Number(feeBps) || market.hookFeeBps)}
+              >
+                Halftime
+              </button>
+              <button type="button" disabled={!canManage} onClick={() => onSettle(market, 'side-a', score, clock)}>
+                Settle {market.sides[0].code}
+              </button>
+              <button type="button" disabled={!canManage} onClick={() => onSettle(market, 'side-b', score, clock)}>
+                Settle {market.sides[1].code}
+              </button>
+              <button type="button" disabled={!canManage} onClick={() => onSettle(market, 'cancelled', score, clock)}>
+                Void
+              </button>
+            </div>
+          </div>
+          <ActionNotice status={actionStatus} />
         </section>
       ) : null}
 
       {activeTab === 'Activity' ? (
         <section className="activity-list">
-          {activityRows.map((row) => (
-            <div className="activity-row" key={`${row.time}-${row.tx}`}>
-              <span>{row.time}</span>
-              <strong>{row.kind}</strong>
-              <em>{row.market}</em>
-              <small>{row.amount}</small>
-              {row.status === 'confirmed' ? <CheckCircle2 size={15} strokeWidth={1.8} /> : <ShieldCheck size={15} strokeWidth={1.8} />}
+          {activityRows.length > 0 ? (
+            activityRows.map((row) => (
+              <div className="activity-row" key={`${row.time}-${row.tx}-${row.kind}`}>
+                <span>{row.time}</span>
+                <strong>{row.kind}</strong>
+                <em>{row.market}</em>
+                <small>{row.amount}</small>
+                {row.status === 'confirmed' ? <CheckCircle2 size={15} strokeWidth={1.8} /> : <ShieldCheck size={15} strokeWidth={1.8} />}
+              </div>
+            ))
+          ) : (
+            <div className="activity-row">
+              <span>-</span>
+              <strong>EMPTY</strong>
+              <em>{market.pool}</em>
+              <small>No X Layer events yet</small>
+              <ShieldCheck size={15} strokeWidth={1.8} />
             </div>
-          ))}
+          )}
         </section>
       ) : null}
     </main>

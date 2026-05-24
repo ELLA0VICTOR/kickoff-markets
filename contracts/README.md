@@ -1,19 +1,41 @@
 # Kickoff Markets Contracts
 
-`KickoffMarkets.sol` is the receipt and room registry the frontend can call with `VITE_KICKOFF_MARKETS_ADDRESS`.
+The contracts are split for cleaner Remix deployment:
 
-`MatchClockHook.sol` is the hackathon hook surface for match-phase fee state. It keeps the phase-to-fee policy isolated so it can be wired into a full Uniswap v4 hook implementation around the X Layer PoolManager.
+- `KickoffTestUSDC.sol`: testnet-only ERC20 collateral with a faucet.
+- `KickoffMarkets.sol`: escrow-backed World Cup market rooms.
 
-Current frontend calls:
+Deploy order for X Layer testnet:
+
+1. Deploy `KickoffTestUSDC.sol`.
+2. Copy the token address.
+3. Deploy `KickoffMarkets.sol` with the token address as constructor input.
+4. Put both addresses in `.env`.
+
+```txt
+VITE_X_LAYER_NETWORK=testnet
+VITE_COLLATERAL_TOKEN_ADDRESS=0xYourKickoffTestUSDC
+VITE_KICKOFF_MARKETS_ADDRESS=0xYourKickoffMarkets
+```
+
+Frontend calls:
 
 - `createRoom(string,string,string)`
 - `placeTrade(bytes32,uint8,uint256)`
 - `addLiquidity(bytes32,uint8,uint256)`
+- `updatePhase(bytes32,uint8,string,string,uint16)`
+- `settle(bytes32,uint8,string,string)`
 - `claim(bytes32)`
+- `getRoomMeta(bytes32)`
+- `getRoomState(bytes32)`
+- `getRoomTotals(bytes32)`
 
-Deploy `KickoffMarkets.sol` first, then put the deployed address in `.env`:
+Collateral flow:
 
-```txt
-VITE_X_LAYER_NETWORK=testnet
-VITE_KICKOFF_MARKETS_ADDRESS=0x...
-```
+1. User claims or receives ERC20 collateral.
+2. User approves `KickoffMarkets`.
+3. Contract pulls collateral into escrow for trades and liquidity.
+4. Room creator settles or cancels the market.
+5. Users claim payout from escrow.
+
+`MatchClockHook.sol` is the phase-to-fee policy surface. It records match clock state and maps phases to fees so the market can expose verifiable fee changes around kickoff, live play, halftime, and settlement.

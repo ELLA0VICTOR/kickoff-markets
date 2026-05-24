@@ -1,4 +1,4 @@
-export type IntegrationMode = 'demo' | 'onchain'
+export type IntegrationMode = 'onchain'
 
 export type ActionStatus = {
   state: 'idle' | 'pending' | 'success' | 'error'

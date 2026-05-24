@@ -1,4 +1,5 @@
 const configuredKickoffAddress = import.meta.env.VITE_KICKOFF_MARKETS_ADDRESS?.trim() ?? ''
+const configuredCollateralAddress = import.meta.env.VITE_COLLATERAL_TOKEN_ADDRESS?.trim() ?? ''
 
 export type XLayerNetworkId = 'mainnet' | 'testnet'
 
@@ -42,6 +43,7 @@ function resolveConfiguredNetwork(): XLayerNetworkId {
 export const X_LAYER_NETWORK = X_LAYER_NETWORKS[resolveConfiguredNetwork()]
 
 export const KICKOFF_MARKETS_ADDRESS = configuredKickoffAddress
+export const COLLATERAL_TOKEN_ADDRESS = configuredCollateralAddress
 
 export function isHexAddress(value: string) {
   return /^0x[a-fA-F0-9]{40}$/.test(value)
@@ -49,6 +51,10 @@ export function isHexAddress(value: string) {
 
 export function isKickoffContractConfigured() {
   return isHexAddress(KICKOFF_MARKETS_ADDRESS) && !/^0x0{40}$/i.test(KICKOFF_MARKETS_ADDRESS)
+}
+
+export function isCollateralTokenConfigured() {
+  return isHexAddress(COLLATERAL_TOKEN_ADDRESS) && !/^0x0{40}$/i.test(COLLATERAL_TOKEN_ADDRESS)
 }
 
 export function explorerTxUrl(txHash?: string) {

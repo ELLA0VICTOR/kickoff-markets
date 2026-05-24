@@ -1,16 +1,18 @@
-import { KICKOFF_MARKETS_ADDRESS, isKickoffContractConfigured } from '../config/contracts'
-import type { MatchMarket } from '../data/markets'
+import {
+  COLLATERAL_TOKEN_ADDRESS,
+  KICKOFF_MARKETS_ADDRESS,
+  X_LAYER_NETWORK,
+  isCollateralTokenConfigured,
+  isKickoffContractConfigured,
+} from '../config/contracts'
+import type { ActivityRow, MarketPhase, MarketSettlement, MatchMarket, PositionRow, RoomDraft } from '../data/markets'
 import type { EthereumProvider } from './wallet'
 
-export type ContractActionResult =
-  | {
-      mode: 'onchain'
-      txHash: string
-    }
-  | {
-      mode: 'demo'
-      txHash?: undefined
-    }
+export type ContractActionResult = {
+  mode: 'onchain'
+  txHash: string
+  approvalHash?: string
+}
 
 type TransactionRequest = {
   from: string
@@ -19,13 +21,100 @@ type TransactionRequest = {
   value?: string
 }
 
+type RpcLog = {
+  address: string
+  blockNumber: string
+  transactionHash: string
+  topics: string[]
+  data: string
+}
+
+type ContractPosition = {
+  sideAStake: bigint
+  sideBStake: bigint
+  lpAStake: bigint
+  lpBStake: bigint
+  feePaid: bigint
+  claimed: boolean
+  claimedAmount: bigint
+  claimableAmount: bigint
+}
+
+type ContractRoom = {
+  roomId: string
+  teamA: string
+  teamB: string
+  kickoff: string
+  score: string
+  clock: string
+  creator: string
+  phase: MarketPhase
+  settlement: MarketSettlement
+  baseFeeBps: number
+  hookFeeBps: number
+  sideAStake: bigint
+  sideBStake: bigint
+  lpAStake: bigint
+  lpBStake: bigint
+  feePool: bigint
+  createdAt: bigint
+  settledAt: bigint
+}
+
+export type OnchainState = {
+  activityRows: ActivityRow[]
+  markets: MatchMarket[]
+  positions: PositionRow[]
+}
+
+const ROOM_COUNT_SIG = 'roomCount()'
+const ROOM_ID_AT_SIG = 'roomIdAt(uint256)'
+const GET_ROOM_META_SIG = 'getRoomMeta(bytes32)'
+const GET_ROOM_STATE_SIG = 'getRoomState(bytes32)'
+const GET_ROOM_TOTALS_SIG = 'getRoomTotals(bytes32)'
+const GET_POSITION_SIG = 'getPosition(bytes32,address)'
+const QUOTE_CLAIM_SIG = 'quoteClaim(bytes32,address)'
 const CREATE_ROOM_SIG = 'createRoom(string,string,string)'
 const PLACE_TRADE_SIG = 'placeTrade(bytes32,uint8,uint256)'
 const ADD_LIQUIDITY_SIG = 'addLiquidity(bytes32,uint8,uint256)'
+const UPDATE_PHASE_SIG = 'updatePhase(bytes32,uint8,string,string,uint16)'
+const SETTLE_SIG = 'settle(bytes32,uint8,string,string)'
 const CLAIM_SIG = 'claim(bytes32)'
+const ALLOWANCE_SIG = 'allowance(address,address)'
+const APPROVE_SIG = 'approve(address,uint256)'
+const BALANCE_OF_SIG = 'balanceOf(address)'
+const FAUCET_SIG = 'faucet()'
+
+const EVENT_SIGNATURES = {
+  claimed: 'Claimed(bytes32,address,uint256)',
+  liquidity: 'LiquidityAdded(bytes32,address,uint8,uint256)',
+  phase: 'PhaseUpdated(bytes32,uint8,string,string,uint16)',
+  room: 'RoomCreated(bytes32,string,string,string,address)',
+  settled: 'RoomSettled(bytes32,uint8,string,string)',
+  trade: 'TradePlaced(bytes32,address,uint8,uint256,uint256,uint256,uint16)',
+}
+
+const TOKEN_DECIMALS = 6n
+const TOKEN_SCALE = 10n ** TOKEN_DECIMALS
+const selectorCache = new Map<string, string>()
+const eventTopicCache = new Map<string, string>()
+
+type AbiValue =
+  | {
+      kind: 'address' | 'bytes32' | 'string'
+      value: string
+    }
+  | {
+      kind: 'uint'
+      value: bigint | number
+    }
 
 function stripHex(value: string) {
   return value.startsWith('0x') ? value.slice(2) : value
+}
+
+function ensure0x(value: string) {
+  return value.startsWith('0x') ? value : `0x${value}`
 }
 
 function padWord(value: string) {
@@ -38,6 +127,12 @@ function textToHex(value: string) {
     .join('')
 }
 
+function hexToText(value: string) {
+  const clean = stripHex(value)
+  const bytes = clean.match(/.{1,2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? []
+  return new TextDecoder().decode(new Uint8Array(bytes))
+}
+
 function bytesToWord(hex: string) {
   const clean = stripHex(hex).slice(0, 64)
   return clean.padEnd(64, '0')
@@ -47,82 +142,663 @@ function encodeUint(value: bigint | number) {
   return padWord(BigInt(value).toString(16))
 }
 
+function encodeAddress(value: string) {
+  return padWord(stripHex(value).toLowerCase())
+}
+
 function encodeString(value: string) {
   const bytes = textToHex(value)
   const paddedLength = Math.ceil(bytes.length / 64) * 64
   return encodeUint(bytes.length / 2) + bytes.padEnd(paddedLength, '0')
 }
 
-function encodeDynamicStrings(values: string[]) {
+function encodeArgs(args: AbiValue[]) {
   const headWords: string[] = []
   const tailWords: string[] = []
-  let offset = BigInt(values.length * 32)
+  let offset = BigInt(args.length * 32)
 
-  for (const value of values) {
-    const encoded = encodeString(value)
-    headWords.push(encodeUint(offset))
-    tailWords.push(encoded)
-    offset += BigInt(encoded.length / 2)
+  for (const arg of args) {
+    if (arg.kind === 'string') {
+      const encoded = encodeString(arg.value)
+      headWords.push(encodeUint(offset))
+      tailWords.push(encoded)
+      offset += BigInt(encoded.length / 2)
+      continue
+    }
+
+    if (arg.kind === 'address') {
+      headWords.push(encodeAddress(arg.value))
+      continue
+    }
+
+    if (arg.kind === 'bytes32') {
+      headWords.push(bytesToWord(arg.value))
+      continue
+    }
+
+    if (arg.kind === 'uint') {
+      headWords.push(encodeUint(arg.value))
+    }
   }
 
   return headWords.join('') + tailWords.join('')
 }
 
-async function selector(provider: EthereumProvider, signature: string) {
-  const signatureHex = `0x${textToHex(signature)}`
-  const hash = await provider.request<string>({
-    method: 'web3_sha3',
-    params: [signatureHex],
-  })
-
-  return hash.slice(0, 10)
+function wordAt(data: string, index: number) {
+  const clean = stripHex(data)
+  return clean.slice(index * 64, index * 64 + 64).padStart(64, '0')
 }
 
-function roomIdFor(market: MatchMarket) {
-  return `0x${bytesToWord(textToHex(market.pool))}`
+function readUint(data: string, index: number) {
+  return BigInt(`0x${wordAt(data, index)}`)
 }
 
-export function parseUsdcAmount(value: string) {
-  const [whole, decimal = ''] = value.trim().replaceAll(',', '').split('.')
-  const wholeUnits = BigInt(whole || '0') * 1_000_000n
-  const decimalUnits = BigInt((decimal + '000000').slice(0, 6) || '0')
-  return wholeUnits + decimalUnits
+function readBool(data: string, index: number) {
+  return readUint(data, index) !== 0n
 }
 
-async function sendTransaction(provider: EthereumProvider, from: string, data: string): Promise<ContractActionResult> {
-  if (!isKickoffContractConfigured()) {
-    return { mode: 'demo' }
+function readAddress(data: string, index: number) {
+  return `0x${wordAt(data, index).slice(24)}`
+}
+
+function readString(data: string, index: number) {
+  const clean = stripHex(data)
+  const offset = Number(readUint(data, index))
+  const length = Number(BigInt(`0x${clean.slice(offset * 2, offset * 2 + 64) || '0'}`))
+  const start = offset * 2 + 64
+  return hexToText(clean.slice(start, start + length * 2))
+}
+
+function topicToAddress(topic?: string) {
+  return topic ? `0x${stripHex(topic).slice(24)}` : ''
+}
+
+function shortAddress(address: string) {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`
+}
+
+function toHexQuantity(value: bigint | number) {
+  return `0x${BigInt(value).toString(16)}`
+}
+
+function tokenUnitsToNumber(value: bigint) {
+  return Number(value) / Number(TOKEN_SCALE)
+}
+
+function formatToken(value: bigint) {
+  const whole = value / TOKEN_SCALE
+  const decimal = value % TOKEN_SCALE
+  if (decimal === 0n) return whole.toString()
+
+  const decimalText = decimal.toString().padStart(Number(TOKEN_DECIMALS), '0').replace(/0+$/, '')
+  return `${whole}.${decimalText}`
+}
+
+function cleanTeamCode(name: string) {
+  return name
+    .trim()
+    .replace(/[^a-zA-Z]/g, '')
+    .slice(0, 3)
+    .toUpperCase() || 'TBD'
+}
+
+function phaseFromContract(value: bigint): MarketPhase {
+  if (value === 1n) return 'live'
+  if (value === 2n) return 'halftime'
+  if (value === 3n) return 'settlement'
+  return 'pre-match'
+}
+
+function settlementFromContract(value: bigint): MarketSettlement {
+  if (value === 1n) return 'cancelled'
+  if (value === 2n) return 'side-a'
+  if (value === 3n) return 'side-b'
+  return 'open'
+}
+
+function settlementToContract(value: MarketSettlement) {
+  if (value === 'cancelled') return 1
+  if (value === 'side-a') return 2
+  if (value === 'side-b') return 3
+  return 0
+}
+
+function phaseToContract(value: MarketPhase) {
+  if (value === 'live') return 1
+  if (value === 'halftime') return 2
+  if (value === 'settlement') return 3
+  return 0
+}
+
+function marketStatus(phase: MarketPhase, settlement: MarketSettlement): MatchMarket['status'] {
+  if (settlement !== 'open' || phase === 'settlement') return 'settling'
+  if (phase === 'live' || phase === 'halftime') return 'live'
+  return 'open'
+}
+
+function marketStage(phase: MarketPhase, settlement: MarketSettlement) {
+  if (settlement === 'side-a' || settlement === 'side-b') return 'Settled room'
+  if (settlement === 'cancelled') return 'Cancelled room'
+  if (phase === 'live') return 'Live room'
+  if (phase === 'halftime') return 'Halftime room'
+  return 'Pre-match room'
+}
+
+function marketNote(room: ContractRoom) {
+  if (room.settlement === 'side-a') return `${room.teamA} settled as winner. Claims are open against escrowed collateral.`
+  if (room.settlement === 'side-b') return `${room.teamB} settled as winner. Claims are open against escrowed collateral.`
+  if (room.settlement === 'cancelled') return 'Room cancelled. Traders and LPs can reclaim escrowed collateral.'
+  if (room.phase === 'live') return 'Live Match Clock fee is active; trade fees are accumulating for LP claim rewards.'
+  if (room.phase === 'halftime') return 'Halftime fee state is active while the match clock is paused.'
+  return 'Pre-match room is open for collateral-backed trades and liquidity.'
+}
+
+function sparklineFromRoom(room: ContractRoom) {
+  const totalStake = room.sideAStake + room.sideBStake
+  const aConviction = totalStake > 0n ? Math.round((Number(room.sideAStake) / Number(totalStake)) * 100) : 50
+  return [50, 50, Math.max(5, aConviction - 6), Math.max(5, aConviction - 2), aConviction, Math.min(95, aConviction + 3)]
+}
+
+export function parseTokenAmount(value: string) {
+  const normalized = value.trim().replaceAll(',', '')
+  if (!/^\d+(\.\d{0,6})?$/.test(normalized)) {
+    throw new Error('Enter a valid USDC amount with up to 6 decimals.')
   }
 
-  const txHash = await provider.request<string>({
-    method: 'eth_sendTransaction',
-    params: [
-      {
-        from,
-        to: KICKOFF_MARKETS_ADDRESS,
-        data,
-      } satisfies TransactionRequest,
-    ],
-  })
+  const [whole, decimal = ''] = normalized.split('.')
+  return BigInt(whole) * TOKEN_SCALE + BigInt((decimal + '000000').slice(0, 6))
+}
 
+async function rpcRequest<T>(method: string, params: unknown[] = []): Promise<T> {
+  let lastError: unknown
+
+  for (const rpcUrl of X_LAYER_NETWORK.rpcUrls) {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: Date.now(),
+          jsonrpc: '2.0',
+          method,
+          params,
+        }),
+      })
+      const payload = (await response.json()) as { error?: { message?: string }; result?: T }
+
+      if (payload.error) {
+        throw new Error(payload.error.message || `${method} failed`)
+      }
+
+      return payload.result as T
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(`${method} failed`)
+}
+
+async function selector(signature: string) {
+  const cached = selectorCache.get(signature)
+  if (cached) return cached
+
+  const hash = await rpcRequest<string>('web3_sha3', [`0x${textToHex(signature)}`])
+  const value = hash.slice(0, 10)
+  selectorCache.set(signature, value)
+  return value
+}
+
+async function eventTopic(signature: string) {
+  const cached = eventTopicCache.get(signature)
+  if (cached) return cached
+
+  const hash = await rpcRequest<string>('web3_sha3', [`0x${textToHex(signature)}`])
+  eventTopicCache.set(signature, hash.toLowerCase())
+  return hash.toLowerCase()
+}
+
+async function encodeCall(signature: string, args: AbiValue[] = []) {
+  return (await selector(signature)) + encodeArgs(args)
+}
+
+async function callContract(to: string, data: string) {
+  return rpcRequest<string>('eth_call', [{ to, data }, 'latest'])
+}
+
+async function sendTransaction(provider: EthereumProvider, from: string, to: string, data: string) {
+  return provider.request<string>({
+    method: 'eth_sendTransaction',
+    params: [{ from, to, data } satisfies TransactionRequest],
+  })
+}
+
+async function waitForTransaction(txHash: string) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const receipt = await rpcRequest<{ status?: string } | null>('eth_getTransactionReceipt', [txHash])
+    if (receipt) {
+      if (receipt.status && receipt.status !== '0x1') {
+        throw new Error('Transaction reverted on-chain.')
+      }
+      return receipt
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 1500))
+  }
+
+  throw new Error('Transaction was submitted but not confirmed yet.')
+}
+
+function requireKickoffAddress() {
+  if (!isKickoffContractConfigured()) {
+    throw new Error('Deploy KickoffMarkets and set VITE_KICKOFF_MARKETS_ADDRESS first.')
+  }
+}
+
+function requireCollateralAddress() {
+  if (!isCollateralTokenConfigured()) {
+    throw new Error('Deploy or configure an ERC20 collateral token in VITE_COLLATERAL_TOKEN_ADDRESS first.')
+  }
+}
+
+async function readRoomCount() {
+  requireKickoffAddress()
+  const data = await encodeCall(ROOM_COUNT_SIG)
+  const result = await callContract(KICKOFF_MARKETS_ADDRESS, data)
+  return Number(readUint(result, 0))
+}
+
+async function readRoomIdAt(index: number) {
+  const data = await encodeCall(ROOM_ID_AT_SIG, [{ kind: 'uint', value: index }])
+  const result = await callContract(KICKOFF_MARKETS_ADDRESS, data)
+  return ensure0x(wordAt(result, 0))
+}
+
+async function readRoom(roomId: string): Promise<ContractRoom> {
+  const [metaResult, stateResult, totalsResult] = await Promise.all([
+    encodeCall(GET_ROOM_META_SIG, [{ kind: 'bytes32', value: roomId }]).then((data) => callContract(KICKOFF_MARKETS_ADDRESS, data)),
+    encodeCall(GET_ROOM_STATE_SIG, [{ kind: 'bytes32', value: roomId }]).then((data) => callContract(KICKOFF_MARKETS_ADDRESS, data)),
+    encodeCall(GET_ROOM_TOTALS_SIG, [{ kind: 'bytes32', value: roomId }]).then((data) => callContract(KICKOFF_MARKETS_ADDRESS, data)),
+  ])
+
+  return {
+    roomId,
+    teamA: readString(metaResult, 0),
+    teamB: readString(metaResult, 1),
+    kickoff: readString(metaResult, 2),
+    creator: readAddress(metaResult, 3),
+    createdAt: readUint(metaResult, 4),
+    score: readString(stateResult, 0),
+    clock: readString(stateResult, 1),
+    phase: phaseFromContract(readUint(stateResult, 2)),
+    settlement: settlementFromContract(readUint(stateResult, 3)),
+    baseFeeBps: Number(readUint(stateResult, 4)),
+    hookFeeBps: Number(readUint(stateResult, 5)),
+    settledAt: readUint(stateResult, 6),
+    sideAStake: readUint(totalsResult, 0),
+    sideBStake: readUint(totalsResult, 1),
+    lpAStake: readUint(totalsResult, 2),
+    lpBStake: readUint(totalsResult, 3),
+    feePool: readUint(totalsResult, 4),
+  }
+}
+
+async function readPosition(roomId: string, walletAddress?: string): Promise<ContractPosition | undefined> {
+  if (!walletAddress) return undefined
+
+  const positionData = await encodeCall(GET_POSITION_SIG, [
+    { kind: 'bytes32', value: roomId },
+    { kind: 'address', value: walletAddress },
+  ])
+  const positionResult = await callContract(KICKOFF_MARKETS_ADDRESS, positionData)
+
+  const quoteData = await encodeCall(QUOTE_CLAIM_SIG, [
+    { kind: 'bytes32', value: roomId },
+    { kind: 'address', value: walletAddress },
+  ])
+  const quoteResult = await callContract(KICKOFF_MARKETS_ADDRESS, quoteData)
+
+  return {
+    sideAStake: readUint(positionResult, 0),
+    sideBStake: readUint(positionResult, 1),
+    lpAStake: readUint(positionResult, 2),
+    lpBStake: readUint(positionResult, 3),
+    feePaid: readUint(positionResult, 4),
+    claimed: readBool(positionResult, 5),
+    claimedAmount: readUint(positionResult, 6),
+    claimableAmount: readUint(quoteResult, 0),
+  }
+}
+
+function roomToMarket(room: ContractRoom, txCount: number, traderCount: number, position?: ContractPosition): MatchMarket {
+  const totalStake = room.sideAStake + room.sideBStake
+  const sideAPrice = totalStake > 0n ? Number(room.sideAStake) / Number(totalStake) : 0.5
+  const sideBPrice = 1 - sideAPrice
+  const sideALiquidity = room.sideAStake + room.lpAStake
+  const sideBLiquidity = room.sideBStake + room.lpBStake
+  const totalLiquidity = room.lpAStake + room.lpBStake
+  const totalVolume = room.sideAStake + room.sideBStake + room.feePool
+  const sideAConviction = Math.round(sideAPrice * 100)
+
+  return {
+    id: room.roomId,
+    roomId: room.roomId,
+    stage: marketStage(room.phase, room.settlement),
+    kickoff: room.kickoff,
+    phase: room.phase,
+    settlement: room.settlement,
+    minute: room.clock,
+    score: room.score,
+    pool: `${cleanTeamCode(room.teamA)}/${cleanTeamCode(room.teamB)}`,
+    creator: room.creator,
+    status: marketStatus(room.phase, room.settlement),
+    liquidity: tokenUnitsToNumber(totalLiquidity),
+    volume: tokenUnitsToNumber(totalVolume),
+    traders: traderCount,
+    hookFeeBps: room.hookFeeBps,
+    baseFeeBps: room.baseFeeBps,
+    feePool: tokenUnitsToNumber(room.feePool),
+    claimableAmount: tokenUnitsToNumber(position?.claimableAmount ?? 0n),
+    xLayerTx: txCount,
+    note: marketNote(room),
+    sides: [
+      {
+        code: cleanTeamCode(room.teamA),
+        name: room.teamA,
+        price: sideAPrice,
+        change: 0,
+        liquidity: tokenUnitsToNumber(sideALiquidity),
+        conviction: sideAConviction,
+      },
+      {
+        code: cleanTeamCode(room.teamB),
+        name: room.teamB,
+        price: sideBPrice,
+        change: 0,
+        liquidity: tokenUnitsToNumber(sideBLiquidity),
+        conviction: 100 - sideAConviction,
+      },
+    ],
+    sparkline: sparklineFromRoom(room),
+  }
+}
+
+function positionRowsFor(room: ContractRoom, market: MatchMarket, position?: ContractPosition): PositionRow[] {
+  if (!position) return []
+
+  const rows: PositionRow[] = []
+  const status = market.settlement === 'open' || position.claimableAmount === 0n ? 'open' : 'claimable'
+
+  if (position.sideAStake > 0n) {
+    rows.push({
+      market: market.pool,
+      side: room.teamA,
+      size: `$${formatToken(position.sideAStake)}`,
+      entry: `$${market.sides[0].price.toFixed(2)}`,
+      mark: market.settlement,
+      pnl: `$${formatToken(position.claimableAmount)}`,
+      status,
+    })
+  }
+
+  if (position.sideBStake > 0n) {
+    rows.push({
+      market: market.pool,
+      side: room.teamB,
+      size: `$${formatToken(position.sideBStake)}`,
+      entry: `$${market.sides[1].price.toFixed(2)}`,
+      mark: market.settlement,
+      pnl: `$${formatToken(position.claimableAmount)}`,
+      status,
+    })
+  }
+
+  if (position.lpAStake + position.lpBStake > 0n) {
+    rows.push({
+      market: market.pool,
+      side: 'LP position',
+      size: `$${formatToken(position.lpAStake + position.lpBStake)}`,
+      entry: `${market.hookFeeBps} bps`,
+      mark: market.settlement === 'open' ? 'active' : 'claimable',
+      pnl: `$${formatToken(position.claimableAmount)}`,
+      status,
+    })
+  }
+
+  return rows
+}
+
+async function loadActivityLogs(roomLabels: Map<string, string>) {
+  const topics = {
+    claimed: await eventTopic(EVENT_SIGNATURES.claimed),
+    liquidity: await eventTopic(EVENT_SIGNATURES.liquidity),
+    phase: await eventTopic(EVENT_SIGNATURES.phase),
+    room: await eventTopic(EVENT_SIGNATURES.room),
+    settled: await eventTopic(EVENT_SIGNATURES.settled),
+    trade: await eventTopic(EVENT_SIGNATURES.trade),
+  }
+  const logs = await rpcRequest<RpcLog[]>('eth_getLogs', [
+    {
+      address: KICKOFF_MARKETS_ADDRESS,
+      fromBlock: '0x0',
+      toBlock: 'latest',
+    },
+  ])
+
+  const activityRows: ActivityRow[] = []
+  const txCountByRoom = new Map<string, number>()
+  const tradersByRoom = new Map<string, Set<string>>()
+
+  for (const log of logs) {
+    const topic = log.topics[0]?.toLowerCase()
+    const roomId = log.topics[1] ? ensure0x(wordAt(log.topics[1], 0)) : ''
+    const market = roomLabels.get(roomId) ?? `${roomId.slice(0, 10)}...`
+    const time = `#${Number.parseInt(log.blockNumber, 16).toString()}`
+    const tx = `${log.transactionHash.slice(0, 10)}...`
+
+    if (roomId) {
+      txCountByRoom.set(roomId, (txCountByRoom.get(roomId) ?? 0) + 1)
+    }
+
+    if (topic === topics.room) {
+      const creator = topicToAddress(log.topics[2])
+      activityRows.unshift({
+        time,
+        kind: 'ROOM',
+        market,
+        wallet: shortAddress(creator),
+        amount: 'created',
+        fee: '-',
+        tx,
+        status: 'confirmed',
+      })
+      continue
+    }
+
+    if (topic === topics.trade) {
+      const trader = topicToAddress(log.topics[2])
+      const grossAmount = readUint(log.data, 1)
+      const feeBps = readUint(log.data, 4)
+      if (roomId && trader) {
+        const traders = tradersByRoom.get(roomId) ?? new Set<string>()
+        traders.add(trader.toLowerCase())
+        tradersByRoom.set(roomId, traders)
+      }
+      activityRows.unshift({
+        time,
+        kind: 'TRADE',
+        market,
+        wallet: shortAddress(trader),
+        amount: `$${formatToken(grossAmount)}`,
+        fee: `${feeBps.toString()} bps`,
+        tx,
+        status: 'confirmed',
+      })
+      continue
+    }
+
+    if (topic === topics.liquidity) {
+      const provider = topicToAddress(log.topics[2])
+      const amount = readUint(log.data, 1)
+      if (roomId && provider) {
+        const traders = tradersByRoom.get(roomId) ?? new Set<string>()
+        traders.add(provider.toLowerCase())
+        tradersByRoom.set(roomId, traders)
+      }
+      activityRows.unshift({
+        time,
+        kind: 'LP ADD',
+        market,
+        wallet: shortAddress(provider),
+        amount: `$${formatToken(amount)}`,
+        fee: '-',
+        tx,
+        status: 'confirmed',
+      })
+      continue
+    }
+
+    if (topic === topics.settled) {
+      const outcome = settlementFromContract(readUint(log.data, 0))
+      activityRows.unshift({
+        time,
+        kind: 'SETTLE',
+        market,
+        wallet: 'creator',
+        amount: outcome,
+        fee: '12 bps',
+        tx,
+        status: 'confirmed',
+      })
+      continue
+    }
+
+    if (topic === topics.claimed) {
+      const trader = topicToAddress(log.topics[2])
+      const payout = readUint(log.data, 0)
+      activityRows.unshift({
+        time,
+        kind: 'CLAIM',
+        market,
+        wallet: shortAddress(trader),
+        amount: `$${formatToken(payout)}`,
+        fee: '-',
+        tx,
+        status: 'confirmed',
+      })
+      continue
+    }
+
+    if (topic === topics.phase) {
+      activityRows.unshift({
+        time,
+        kind: 'CLOCK',
+        market,
+        wallet: 'creator',
+        amount: 'updated',
+        fee: `${readUint(log.data, 3).toString()} bps`,
+        tx,
+        status: 'confirmed',
+      })
+    }
+  }
+
+  return { activityRows, tradersByRoom, txCountByRoom }
+}
+
+export async function loadOnchainState(walletAddress?: string): Promise<OnchainState> {
+  if (!isKickoffContractConfigured()) {
+    return { activityRows: [], markets: [], positions: [] }
+  }
+
+  const count = await readRoomCount()
+  const roomIds = await Promise.all(Array.from({ length: count }, (_, index) => readRoomIdAt(index)))
+  const rooms = await Promise.all(roomIds.map((roomId) => readRoom(roomId)))
+  const roomLabels = new Map(rooms.map((room) => [room.roomId, `${cleanTeamCode(room.teamA)}/${cleanTeamCode(room.teamB)}`]))
+  const { activityRows, tradersByRoom, txCountByRoom } = await loadActivityLogs(roomLabels)
+  const positions = await Promise.all(rooms.map((room) => readPosition(room.roomId, walletAddress)))
+  const markets = rooms.map((room, index) =>
+    roomToMarket(room, txCountByRoom.get(room.roomId) ?? 0, tradersByRoom.get(room.roomId)?.size ?? 0, positions[index]),
+  )
+  const positionRows = rooms.flatMap((room, index) => positionRowsFor(room, markets[index], positions[index]))
+
+  return {
+    activityRows,
+    markets: markets.reverse(),
+    positions: positionRows,
+  }
+}
+
+export async function readCollateralBalance(address: string) {
+  requireCollateralAddress()
+  const data = await encodeCall(BALANCE_OF_SIG, [{ kind: 'address', value: address }])
+  const result = await callContract(COLLATERAL_TOKEN_ADDRESS, data)
+  return tokenUnitsToNumber(readUint(result, 0))
+}
+
+async function readAllowance(owner: string) {
+  requireCollateralAddress()
+  requireKickoffAddress()
+  const data = await encodeCall(ALLOWANCE_SIG, [
+    { kind: 'address', value: owner },
+    { kind: 'address', value: KICKOFF_MARKETS_ADDRESS },
+  ])
+  const result = await callContract(COLLATERAL_TOKEN_ADDRESS, data)
+  return readUint(result, 0)
+}
+
+async function approveIfNeeded(provider: EthereumProvider, from: string, amount: bigint) {
+  requireCollateralAddress()
+  const currentAllowance = await readAllowance(from)
+  if (currentAllowance >= amount) return undefined
+
+  const data = await encodeCall(APPROVE_SIG, [
+    { kind: 'address', value: KICKOFF_MARKETS_ADDRESS },
+    { kind: 'uint', value: amount },
+  ])
+  const txHash = await sendTransaction(provider, from, COLLATERAL_TOKEN_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return txHash
+}
+
+export async function faucetCollateralTx(provider: EthereumProvider, from: string): Promise<ContractActionResult> {
+  requireCollateralAddress()
+  const data = await encodeCall(FAUCET_SIG)
+  const txHash = await sendTransaction(provider, from, COLLATERAL_TOKEN_ADDRESS, data)
+  await waitForTransaction(txHash)
   return { mode: 'onchain', txHash }
 }
 
-export async function createRoomTx(provider: EthereumProvider, from: string, market: MatchMarket) {
-  const method = await selector(provider, CREATE_ROOM_SIG)
-  const data = method + encodeDynamicStrings([market.sides[0].name, market.sides[1].name, market.kickoff])
-  return sendTransaction(provider, from, data)
+export async function createRoomTx(provider: EthereumProvider, from: string, draft: RoomDraft): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const data = await encodeCall(CREATE_ROOM_SIG, [
+    { kind: 'string', value: draft.teamA },
+    { kind: 'string', value: draft.teamB },
+    { kind: 'string', value: draft.kickoff },
+  ])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash }
 }
 
-export async function placeTradeTx(provider: EthereumProvider, from: string, market: MatchMarket, sideIndex: number, amount: string) {
-  const method = await selector(provider, PLACE_TRADE_SIG)
-  const data =
-    method +
-    bytesToWord(roomIdFor(market)) +
-    encodeUint(sideIndex) +
-    encodeUint(parseUsdcAmount(amount))
-
-  return sendTransaction(provider, from, data)
+export async function placeTradeTx(
+  provider: EthereumProvider,
+  from: string,
+  market: MatchMarket,
+  sideIndex: number,
+  amount: string,
+): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const parsedAmount = parseTokenAmount(amount)
+  const approvalHash = await approveIfNeeded(provider, from, parsedAmount)
+  const data = await encodeCall(PLACE_TRADE_SIG, [
+    { kind: 'bytes32', value: market.roomId },
+    { kind: 'uint', value: sideIndex },
+    { kind: 'uint', value: parsedAmount },
+  ])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash, approvalHash }
 }
 
 export async function addLiquidityTx(
@@ -131,19 +807,68 @@ export async function addLiquidityTx(
   market: MatchMarket,
   sideIndex: number,
   amount: string,
-) {
-  const method = await selector(provider, ADD_LIQUIDITY_SIG)
-  const data =
-    method +
-    bytesToWord(roomIdFor(market)) +
-    encodeUint(sideIndex) +
-    encodeUint(parseUsdcAmount(amount))
-
-  return sendTransaction(provider, from, data)
+): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const parsedAmount = parseTokenAmount(amount)
+  const approvalHash = await approveIfNeeded(provider, from, parsedAmount)
+  const data = await encodeCall(ADD_LIQUIDITY_SIG, [
+    { kind: 'bytes32', value: market.roomId },
+    { kind: 'uint', value: sideIndex },
+    { kind: 'uint', value: parsedAmount },
+  ])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash, approvalHash }
 }
 
-export async function claimTx(provider: EthereumProvider, from: string, market: MatchMarket) {
-  const method = await selector(provider, CLAIM_SIG)
-  const data = method + bytesToWord(roomIdFor(market))
-  return sendTransaction(provider, from, data)
+export async function updatePhaseTx(
+  provider: EthereumProvider,
+  from: string,
+  market: MatchMarket,
+  phase: MarketPhase,
+  clock: string,
+  score: string,
+  feeBps: number,
+): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const data = await encodeCall(UPDATE_PHASE_SIG, [
+    { kind: 'bytes32', value: market.roomId },
+    { kind: 'uint', value: phaseToContract(phase) },
+    { kind: 'string', value: clock },
+    { kind: 'string', value: score },
+    { kind: 'uint', value: feeBps },
+  ])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash }
 }
+
+export async function settleRoomTx(
+  provider: EthereumProvider,
+  from: string,
+  market: MatchMarket,
+  outcome: Exclude<MarketSettlement, 'open'>,
+  score: string,
+  clock: string,
+): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const data = await encodeCall(SETTLE_SIG, [
+    { kind: 'bytes32', value: market.roomId },
+    { kind: 'uint', value: settlementToContract(outcome) },
+    { kind: 'string', value: score },
+    { kind: 'string', value: clock },
+  ])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash }
+}
+
+export async function claimTx(provider: EthereumProvider, from: string, market: MatchMarket): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const data = await encodeCall(CLAIM_SIG, [{ kind: 'bytes32', value: market.roomId }])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash }
+}
+
+export { formatToken, tokenUnitsToNumber, toHexQuantity }
