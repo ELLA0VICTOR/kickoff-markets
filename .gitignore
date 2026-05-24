@@ -31,6 +31,9 @@ out
 deployments
 .openzeppelin
 
+# Local oracle inputs
+scripts/oracle-results.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,9 +1,10 @@
 import { ArrowLeft, CheckCircle2, Clock3, Droplets, ExternalLink, Radio, ShieldCheck } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { explorerTxUrl } from '../../config/contracts'
-import type { ActivityRow, HookStep, MarketPhase, MarketSettlement, MatchMarket, PositionRow } from '../../data/markets'
+import type { ActivityRow, FinalMarketSettlement, HookStep, MarketPhase, MatchMarket, PositionRow } from '../../data/markets'
 import { formatCurrency, formatNumber } from '../../lib/format'
+import { getOracleStatus } from '../../lib/oracleStatus'
 import type { ActionStatus } from '../../types/integration'
 import { MatchPoster } from './MatchPoster'
 
@@ -20,8 +21,11 @@ type MarketPageProps = {
   onAddLiquidity: (market: MatchMarket, sideIndex: number, amount: string) => void
   onBack: () => void
   onClaim: (market: MatchMarket) => void
+  onDispute: (market: MatchMarket) => void
+  onFinalize: (market: MatchMarket) => void
   onPlaceTrade: (market: MatchMarket, sideIndex: number, amount: string) => void
-  onSettle: (market: MatchMarket, outcome: Exclude<MarketSettlement, 'open'>, score: string, clock: string) => void
+  onResolveDispute: (market: MatchMarket, outcome: FinalMarketSettlement, score: string, clock: string) => void
+  onSettle: (market: MatchMarket, outcome: FinalMarketSettlement, score: string, clock: string) => void
   onUpdatePhase: (market: MatchMarket, phase: MarketPhase, clock: string, score: string, feeBps: number) => void
 }
 
@@ -38,7 +42,10 @@ export function MarketPage({
   onAddLiquidity,
   onBack,
   onClaim,
+  onDispute,
+  onFinalize,
   onPlaceTrade,
+  onResolveDispute,
   onSettle,
   onUpdatePhase,
 }: MarketPageProps) {
@@ -46,6 +53,7 @@ export function MarketPage({
   const [sideIndex, setSideIndex] = useState<0 | 1>(0)
   const [amount, setAmount] = useState('250')
   const [liquidityAmount, setLiquidityAmount] = useState('1000')
+  const [now, setNow] = useState(() => Date.now())
   const [clockDraft, setClockDraft] = useState({
     feeBps: String(market.hookFeeBps),
     marketId: market.id,
@@ -59,9 +67,23 @@ export function MarketPage({
   const amountNumber = Number(amount) || 0
   const canManage =
     Boolean(walletAddress) && walletAddress?.toLowerCase() === market.creator.toLowerCase() && market.settlement === 'open'
+  const canResolve =
+    Boolean(walletAddress) &&
+    walletAddress?.toLowerCase() === market.creator.toLowerCase() &&
+    market.settlement === 'disputed'
+  const canDispute = Boolean(walletAddress) && market.settlement.startsWith('proposed')
+  const canFinalize = market.settlement.startsWith('proposed')
   const roomOpen = market.settlement === 'open'
+  const canTrade = contractReady && roomOpen && market.liquidity > 0
+  const oracleStatus = getOracleStatus(market, now)
+  const settlementVerb = oracleStatus.fallbackEnabled ? 'Fallback' : 'Propose'
 
   const estimatedReceipts = useMemo(() => amountNumber / selectedSide.price, [amountNumber, selectedSide.price])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   function updateClockDraft(next: Partial<typeof clockDraft>) {
     setClockDraft({
@@ -87,6 +109,11 @@ export function MarketPage({
             ? 'Trades, liquidity, settlement, and claims use X Layer contracts.'
             : 'Deploy KickoffMarkets with collateral, then set both contract addresses.'}
         </strong>
+      </div>
+
+      <div className={`oracle-strip oracle-${oracleStatus.kind}`}>
+        <span>{oracleStatus.label}</span>
+        <strong>{oracleStatus.detail}</strong>
       </div>
 
       <section className="detail-hero">
@@ -154,13 +181,13 @@ export function MarketPage({
             </label>
             <div className="ticket-summary">
               <Row label="Buying" value={selectedSide.name} />
-              <Row label="Receipts" value={estimatedReceipts.toFixed(2)} />
+              <Row label="Est. shares" value={estimatedReceipts.toFixed(2)} />
               <Row label="Fee" value={`${market.hookFeeBps} bps`} />
             </div>
             <button
               className="primary-action"
               type="button"
-              disabled={!contractReady || !roomOpen}
+              disabled={!canTrade}
               onClick={() => onPlaceTrade(market, sideIndex, amount)}
             >
               Place trade
@@ -185,7 +212,7 @@ export function MarketPage({
           <div className="info-panel liquidity-ticket">
             <span>LP amount</span>
             <input value={liquidityAmount} onChange={(event) => setLiquidityAmount(event.target.value)} inputMode="decimal" />
-            <small>USDC routed as liquidity receipt</small>
+            <small>USDC seeds both outcome reserves</small>
           </div>
           {positions.map((position) => (
             <div className="info-panel" key={`${position.market}-${position.side}`}>
@@ -214,6 +241,8 @@ export function MarketPage({
           ))}
           <div className="info-panel oracle-panel">
             <span>Match Clock</span>
+            <strong>{oracleStatus.label}</strong>
+            <small>{oracleStatus.detail}</small>
             <input value={clock} onChange={(event) => updateClockDraft({ clock: event.target.value })} aria-label="Match clock" />
             <input value={score} onChange={(event) => updateClockDraft({ score: event.target.value })} aria-label="Score" />
             <input
@@ -238,13 +267,25 @@ export function MarketPage({
                 Halftime
               </button>
               <button type="button" disabled={!canManage} onClick={() => onSettle(market, 'side-a', score, clock)}>
-                Settle {market.sides[0].code}
+                {settlementVerb} {market.sides[0].code}
               </button>
               <button type="button" disabled={!canManage} onClick={() => onSettle(market, 'side-b', score, clock)}>
-                Settle {market.sides[1].code}
+                {settlementVerb} {market.sides[1].code}
               </button>
               <button type="button" disabled={!canManage} onClick={() => onSettle(market, 'cancelled', score, clock)}>
-                Void
+                {settlementVerb} void
+              </button>
+              <button type="button" disabled={!canDispute} onClick={() => onDispute(market)}>
+                Dispute
+              </button>
+              <button type="button" disabled={!canFinalize} onClick={() => onFinalize(market)}>
+                Finalize
+              </button>
+              <button type="button" disabled={!canResolve} onClick={() => onResolveDispute(market, 'side-a', score, clock)}>
+                Resolve {market.sides[0].code}
+              </button>
+              <button type="button" disabled={!canResolve} onClick={() => onResolveDispute(market, 'side-b', score, clock)}>
+                Resolve {market.sides[1].code}
               </button>
             </div>
           </div>

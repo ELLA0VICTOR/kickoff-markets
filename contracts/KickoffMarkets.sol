@@ -11,6 +11,10 @@ contract KickoffMarkets {
 
     enum Settlement {
         Open,
+        ProposedCancel,
+        ProposedSideA,
+        ProposedSideB,
+        Disputed,
         Cancelled,
         SideA,
         SideB
@@ -23,25 +27,29 @@ contract KickoffMarkets {
         string score;
         string clock;
         address creator;
+        address proposer;
         uint16 baseFeeBps;
         uint16 hookFeeBps;
         Phase phase;
         Settlement settlement;
+        Settlement proposedOutcome;
         bool exists;
-        uint256 sideAStake;
-        uint256 sideBStake;
-        uint256 lpAStake;
-        uint256 lpBStake;
+        uint256 reserveA;
+        uint256 reserveB;
+        uint256 totalLpShares;
         uint256 feePool;
         uint256 createdAt;
+        uint256 proposedAt;
+        uint256 disputeDeadline;
         uint256 settledAt;
     }
 
     struct Position {
-        uint256 sideAStake;
-        uint256 sideBStake;
-        uint256 lpAStake;
-        uint256 lpBStake;
+        uint256 sideAShares;
+        uint256 sideBShares;
+        uint256 lpShares;
+        uint256 collateralSpent;
+        uint256 liquidityProvided;
         uint256 feePaid;
         bool claimed;
         uint256 claimedAmount;
@@ -49,31 +57,61 @@ contract KickoffMarkets {
 
     address public immutable collateralToken;
     address public owner;
+    address public oracleAgent;
+    address public matchClockHook;
     uint16 public constant MAX_HOOK_FEE_BPS = 1_000;
+    uint256 public disputePeriod = 3 minutes;
+
     bytes4 private constant TRANSFER_SELECTOR = 0xa9059cbb;
     bytes4 private constant TRANSFER_FROM_SELECTOR = 0x23b872dd;
+    bytes4 private constant UPDATE_CLOCK_SELECTOR = bytes4(keccak256("updateClock(bytes32,uint8,string,string)"));
 
     mapping(bytes32 => Room) public rooms;
     mapping(bytes32 => mapping(address => Position)) public positions;
     bytes32[] private roomIds;
 
     event Claimed(bytes32 indexed roomId, address indexed trader, uint256 payout);
-    event LiquidityAdded(bytes32 indexed roomId, address indexed provider, uint8 side, uint256 amount);
+    event DisputePeriodUpdated(uint256 disputePeriod);
+    event HookLinked(address indexed hook);
+    event LiquidityAdded(bytes32 indexed roomId, address indexed provider, uint256 amount, uint256 lpShares);
+    event OracleAgentUpdated(address indexed oracleAgent);
     event PhaseUpdated(bytes32 indexed roomId, Phase phase, string clock, string score, uint16 hookFeeBps);
     event RoomCreated(bytes32 indexed roomId, string teamA, string teamB, string kickoff, address indexed creator);
     event RoomSettled(bytes32 indexed roomId, Settlement outcome, string score, string clock);
+    event SettlementDisputed(bytes32 indexed roomId, address indexed disputer, string reason);
+    event SettlementProposed(
+        bytes32 indexed roomId,
+        address indexed proposer,
+        Settlement outcome,
+        uint256 disputeDeadline,
+        string score,
+        string clock
+    );
     event TradePlaced(
         bytes32 indexed roomId,
         address indexed trader,
         uint8 side,
         uint256 grossAmount,
-        uint256 netStake,
+        uint256 sharesOut,
         uint256 feeAmount,
         uint16 feeBps
     );
 
+    modifier onlyOwner() {
+        require(msg.sender == owner, "NOT_OWNER");
+        _;
+    }
+
     modifier onlyRoomCreator(bytes32 roomId) {
         require(rooms[roomId].creator == msg.sender, "NOT_ROOM_CREATOR");
+        _;
+    }
+
+    modifier onlyResolver(bytes32 roomId) {
+        require(
+            msg.sender == rooms[roomId].creator || msg.sender == oracleAgent || msg.sender == owner,
+            "NOT_RESOLVER"
+        );
         _;
     }
 
@@ -81,6 +119,23 @@ contract KickoffMarkets {
         require(collateralToken_ != address(0), "ZERO_COLLATERAL");
         collateralToken = collateralToken_;
         owner = msg.sender;
+    }
+
+    function setOracleAgent(address nextOracleAgent) external onlyOwner {
+        oracleAgent = nextOracleAgent;
+        emit OracleAgentUpdated(nextOracleAgent);
+    }
+
+    function setMatchClockHook(address nextHook) external onlyOwner {
+        matchClockHook = nextHook;
+        emit HookLinked(nextHook);
+    }
+
+    function setDisputePeriod(uint256 nextDisputePeriod) external onlyOwner {
+        require(nextDisputePeriod >= 30 seconds, "DISPUTE_TOO_SHORT");
+        require(nextDisputePeriod <= 7 days, "DISPUTE_TOO_LONG");
+        disputePeriod = nextDisputePeriod;
+        emit DisputePeriodUpdated(nextDisputePeriod);
     }
 
     function createRoom(
@@ -112,53 +167,54 @@ contract KickoffMarkets {
         emit RoomCreated(roomId, teamA, teamB, kickoff, msg.sender);
     }
 
+    function addLiquidity(bytes32 roomId, uint8 side, uint256 collateralAmount) external {
+        Room storage room = rooms[roomId];
+        require(room.exists, "ROOM_NOT_FOUND");
+        require(room.settlement == Settlement.Open, "ROOM_NOT_OPEN");
+        require(side < 2, "BAD_SIDE");
+        require(collateralAmount > 0, "ZERO_AMOUNT");
+
+        _pullCollateral(msg.sender, collateralAmount);
+
+        Position storage position = positions[roomId][msg.sender];
+        position.lpShares += collateralAmount;
+        position.liquidityProvided += collateralAmount;
+        room.totalLpShares += collateralAmount;
+        room.reserveA += collateralAmount;
+        room.reserveB += collateralAmount;
+
+        emit LiquidityAdded(roomId, msg.sender, collateralAmount, collateralAmount);
+    }
+
     function placeTrade(bytes32 roomId, uint8 side, uint256 collateralAmount) external {
         Room storage room = rooms[roomId];
         require(room.exists, "ROOM_NOT_FOUND");
-        require(room.settlement == Settlement.Open, "ROOM_SETTLED");
+        require(room.settlement == Settlement.Open, "ROOM_NOT_OPEN");
         require(room.phase != Phase.Settlement, "SETTLEMENT_PHASE");
         require(side < 2, "BAD_SIDE");
         require(collateralAmount > 0, "ZERO_AMOUNT");
+        require(room.reserveA > 0 && room.reserveB > 0, "NO_LIQUIDITY");
 
         _pullCollateral(msg.sender, collateralAmount);
 
         uint256 feeAmount = (collateralAmount * room.hookFeeBps) / 10_000;
-        uint256 netStake = collateralAmount - feeAmount;
+        uint256 netAmount = collateralAmount - feeAmount;
+        require(netAmount > 0, "NET_ZERO");
+
+        uint256 sharesOut = _buyOutcome(room, side, netAmount);
         Position storage position = positions[roomId][msg.sender];
 
         if (side == 0) {
-            position.sideAStake += netStake;
-            room.sideAStake += netStake;
+            position.sideAShares += sharesOut;
         } else {
-            position.sideBStake += netStake;
-            room.sideBStake += netStake;
+            position.sideBShares += sharesOut;
         }
 
+        position.collateralSpent += netAmount;
         position.feePaid += feeAmount;
         room.feePool += feeAmount;
 
-        emit TradePlaced(roomId, msg.sender, side, collateralAmount, netStake, feeAmount, room.hookFeeBps);
-    }
-
-    function addLiquidity(bytes32 roomId, uint8 side, uint256 collateralAmount) external {
-        Room storage room = rooms[roomId];
-        require(room.exists, "ROOM_NOT_FOUND");
-        require(room.settlement == Settlement.Open, "ROOM_SETTLED");
-        require(side < 2, "BAD_SIDE");
-        require(collateralAmount > 0, "ZERO_AMOUNT");
-
-        _pullCollateral(msg.sender, collateralAmount);
-
-        Position storage position = positions[roomId][msg.sender];
-        if (side == 0) {
-            position.lpAStake += collateralAmount;
-            room.lpAStake += collateralAmount;
-        } else {
-            position.lpBStake += collateralAmount;
-            room.lpBStake += collateralAmount;
-        }
-
-        emit LiquidityAdded(roomId, msg.sender, side, collateralAmount);
+        emit TradePlaced(roomId, msg.sender, side, collateralAmount, sharesOut, feeAmount, room.hookFeeBps);
     }
 
     function updatePhase(
@@ -166,47 +222,85 @@ contract KickoffMarkets {
         Phase phase,
         string calldata clock,
         string calldata score,
-        uint16 hookFeeBps
+        uint16 suggestedFeeBps
     ) external onlyRoomCreator(roomId) {
         Room storage room = rooms[roomId];
         require(room.exists, "ROOM_NOT_FOUND");
-        require(room.settlement == Settlement.Open, "ROOM_SETTLED");
-        require(hookFeeBps <= MAX_HOOK_FEE_BPS, "FEE_TOO_HIGH");
+        require(room.settlement == Settlement.Open, "ROOM_NOT_OPEN");
+
+        uint16 nextFeeBps = _nextFeeBps(roomId, phase, clock, score, suggestedFeeBps);
+        require(nextFeeBps <= MAX_HOOK_FEE_BPS, "FEE_TOO_HIGH");
 
         room.phase = phase;
         room.clock = clock;
         room.score = score;
-        room.hookFeeBps = hookFeeBps;
+        room.hookFeeBps = nextFeeBps;
 
-        emit PhaseUpdated(roomId, phase, clock, score, hookFeeBps);
+        emit PhaseUpdated(roomId, phase, clock, score, nextFeeBps);
     }
 
-    function settle(
+    function proposeSettlement(
         bytes32 roomId,
-        Settlement outcome,
+        uint8 outcome,
         string calldata score,
         string calldata clock
-    ) external onlyRoomCreator(roomId) {
+    ) external onlyResolver(roomId) {
         Room storage room = rooms[roomId];
         require(room.exists, "ROOM_NOT_FOUND");
-        require(room.settlement == Settlement.Open, "ALREADY_SETTLED");
-        require(outcome != Settlement.Open, "BAD_OUTCOME");
+        require(room.settlement == Settlement.Open, "ROOM_NOT_OPEN");
 
-        room.settlement = outcome;
-        room.phase = Phase.Settlement;
+        Settlement proposed = _proposedSettlement(outcome);
+        room.settlement = proposed;
+        room.proposedOutcome = _finalSettlement(outcome);
+        room.proposer = msg.sender;
         room.score = score;
         room.clock = clock;
+        room.phase = Phase.Settlement;
         room.hookFeeBps = 12;
-        room.settledAt = block.timestamp;
+        room.proposedAt = block.timestamp;
+        room.disputeDeadline = block.timestamp + disputePeriod;
 
-        emit RoomSettled(roomId, outcome, score, clock);
+        emit SettlementProposed(roomId, msg.sender, proposed, room.disputeDeadline, score, clock);
         emit PhaseUpdated(roomId, Phase.Settlement, clock, score, 12);
+    }
+
+    function disputeSettlement(bytes32 roomId, string calldata reason) external {
+        Room storage room = rooms[roomId];
+        require(room.exists, "ROOM_NOT_FOUND");
+        require(_isProposed(room.settlement), "NO_PROPOSAL");
+        require(block.timestamp < room.disputeDeadline, "DISPUTE_CLOSED");
+        require(_hasPosition(roomId, msg.sender), "NO_POSITION");
+
+        room.settlement = Settlement.Disputed;
+        emit SettlementDisputed(roomId, msg.sender, reason);
+    }
+
+    function finalizeSettlement(bytes32 roomId) external {
+        Room storage room = rooms[roomId];
+        require(room.exists, "ROOM_NOT_FOUND");
+        require(_isProposed(room.settlement), "NO_PROPOSAL");
+        require(block.timestamp >= room.disputeDeadline, "DISPUTE_OPEN");
+
+        _finalize(roomId, room.proposedOutcome, room.score, room.clock);
+    }
+
+    function resolveDispute(
+        bytes32 roomId,
+        uint8 outcome,
+        string calldata score,
+        string calldata clock
+    ) external onlyResolver(roomId) {
+        Room storage room = rooms[roomId];
+        require(room.exists, "ROOM_NOT_FOUND");
+        require(room.settlement == Settlement.Disputed, "NOT_DISPUTED");
+
+        _finalize(roomId, _finalSettlement(outcome), score, clock);
     }
 
     function claim(bytes32 roomId) external returns (uint256 payout) {
         Room storage room = rooms[roomId];
         require(room.exists, "ROOM_NOT_FOUND");
-        require(room.settlement != Settlement.Open, "ROOM_OPEN");
+        require(_isFinal(room.settlement), "ROOM_NOT_FINAL");
 
         Position storage position = positions[roomId][msg.sender];
         require(!position.claimed, "ALREADY_CLAIMED");
@@ -224,7 +318,7 @@ contract KickoffMarkets {
 
     function quoteClaim(bytes32 roomId, address trader) external view returns (uint256) {
         Room storage room = rooms[roomId];
-        if (!room.exists || room.settlement == Settlement.Open) return 0;
+        if (!room.exists || !_isFinal(room.settlement)) return 0;
         return _quoteClaim(room, positions[roomId][trader]);
     }
 
@@ -241,14 +335,7 @@ contract KickoffMarkets {
     {
         Room storage room = rooms[roomId];
         require(room.exists, "ROOM_NOT_FOUND");
-
-        return (
-            room.teamA,
-            room.teamB,
-            room.kickoff,
-            room.creator,
-            room.createdAt
-        );
+        return (room.teamA, room.teamB, room.kickoff, room.creator, room.createdAt);
     }
 
     function getRoomState(bytes32 roomId)
@@ -261,7 +348,10 @@ contract KickoffMarkets {
             uint8 settlement,
             uint16 baseFeeBps,
             uint16 hookFeeBps,
-            uint256 settledAt
+            uint256 settledAt,
+            uint8 proposedOutcome,
+            uint256 disputeDeadline,
+            address proposer
         )
     {
         Room storage room = rooms[roomId];
@@ -274,7 +364,10 @@ contract KickoffMarkets {
             uint8(room.settlement),
             room.baseFeeBps,
             room.hookFeeBps,
-            room.settledAt
+            room.settledAt,
+            uint8(room.proposedOutcome),
+            room.disputeDeadline,
+            room.proposer
         );
     }
 
@@ -282,33 +375,26 @@ contract KickoffMarkets {
         external
         view
         returns (
-            uint256 sideAStake,
-            uint256 sideBStake,
-            uint256 lpAStake,
-            uint256 lpBStake,
-            uint256 feePool
+            uint256 reserveA,
+            uint256 reserveB,
+            uint256 totalLpShares,
+            uint256 feePool,
+            uint256 totalCollateral
         )
     {
         Room storage room = rooms[roomId];
         require(room.exists, "ROOM_NOT_FOUND");
-
-        return (
-            room.sideAStake,
-            room.sideBStake,
-            room.lpAStake,
-            room.lpBStake,
-            room.feePool
-        );
+        return (room.reserveA, room.reserveB, room.totalLpShares, room.feePool, room.reserveA + room.reserveB + room.feePool);
     }
 
     function getPosition(bytes32 roomId, address trader)
         external
         view
         returns (
-            uint256 sideAStake,
-            uint256 sideBStake,
-            uint256 lpAStake,
-            uint256 lpBStake,
+            uint256 sideAShares,
+            uint256 sideBShares,
+            uint256 lpShares,
+            uint256 liquidityProvided,
             uint256 feePaid,
             bool claimed,
             uint256 claimedAmount
@@ -316,10 +402,10 @@ contract KickoffMarkets {
     {
         Position storage position = positions[roomId][trader];
         return (
-            position.sideAStake,
-            position.sideBStake,
-            position.lpAStake,
-            position.lpBStake,
+            position.sideAShares,
+            position.sideBShares,
+            position.lpShares,
+            position.liquidityProvided,
             position.feePaid,
             position.claimed,
             position.claimedAmount
@@ -333,6 +419,44 @@ contract KickoffMarkets {
     function roomIdAt(uint256 index) external view returns (bytes32) {
         require(index < roomIds.length, "INDEX_OUT_OF_BOUNDS");
         return roomIds[index];
+    }
+
+    function _buyOutcome(Room storage room, uint8 side, uint256 netAmount) internal returns (uint256 sharesOut) {
+        uint256 invariant = room.reserveA * room.reserveB;
+
+        if (side == 0) {
+            uint256 sideANextReserveB = room.reserveB + netAmount;
+            uint256 sideANextReserveA = invariant / sideANextReserveB;
+            uint256 ammSharesOut = room.reserveA - sideANextReserveA;
+            room.reserveA = sideANextReserveA;
+            room.reserveB = sideANextReserveB;
+            return netAmount + ammSharesOut;
+        }
+
+        uint256 sideBNextReserveA = room.reserveA + netAmount;
+        uint256 sideBNextReserveB = invariant / sideBNextReserveA;
+        uint256 sideBSharesOut = room.reserveB - sideBNextReserveB;
+        room.reserveA = sideBNextReserveA;
+        room.reserveB = sideBNextReserveB;
+        return netAmount + sideBSharesOut;
+    }
+
+    function _nextFeeBps(
+        bytes32 roomId,
+        Phase phase,
+        string calldata clock,
+        string calldata score,
+        uint16 suggestedFeeBps
+    ) internal returns (uint16) {
+        if (matchClockHook == address(0)) {
+            return suggestedFeeBps;
+        }
+
+        (bool success, bytes memory data) = matchClockHook.call(
+            abi.encodeWithSelector(UPDATE_CLOCK_SELECTOR, roomId, uint8(phase), clock, score)
+        );
+        require(success, "HOOK_FAILED");
+        return abi.decode(data, (uint16));
     }
 
     function _pullCollateral(address from, uint256 amount) internal {
@@ -349,56 +473,76 @@ contract KickoffMarkets {
         require(success && (data.length == 0 || abi.decode(data, (bool))), "TRANSFER_FROM_FAILED");
     }
 
+    function _proposedSettlement(uint8 outcome) internal pure returns (Settlement) {
+        if (outcome == 1) return Settlement.ProposedCancel;
+        if (outcome == 2) return Settlement.ProposedSideA;
+        if (outcome == 3) return Settlement.ProposedSideB;
+        revert("BAD_OUTCOME");
+    }
+
+    function _finalSettlement(uint8 outcome) internal pure returns (Settlement) {
+        if (outcome == 1) return Settlement.Cancelled;
+        if (outcome == 2) return Settlement.SideA;
+        if (outcome == 3) return Settlement.SideB;
+        revert("BAD_OUTCOME");
+    }
+
+    function _isProposed(Settlement settlement) internal pure returns (bool) {
+        return settlement == Settlement.ProposedCancel || settlement == Settlement.ProposedSideA || settlement == Settlement.ProposedSideB;
+    }
+
+    function _isFinal(Settlement settlement) internal pure returns (bool) {
+        return settlement == Settlement.Cancelled || settlement == Settlement.SideA || settlement == Settlement.SideB;
+    }
+
+    function _hasPosition(bytes32 roomId, address trader) internal view returns (bool) {
+        Position storage position = positions[roomId][trader];
+        return position.sideAShares + position.sideBShares + position.lpShares > 0;
+    }
+
+    function _finalize(
+        bytes32 roomId,
+        Settlement outcome,
+        string memory score,
+        string memory clock
+    ) internal {
+        Room storage room = rooms[roomId];
+        require(outcome == Settlement.Cancelled || outcome == Settlement.SideA || outcome == Settlement.SideB, "BAD_FINAL");
+
+        room.settlement = outcome;
+        room.phase = Phase.Settlement;
+        room.score = score;
+        room.clock = clock;
+        room.hookFeeBps = 12;
+        room.settledAt = block.timestamp;
+
+        emit RoomSettled(roomId, outcome, score, clock);
+        emit PhaseUpdated(roomId, Phase.Settlement, clock, score, 12);
+    }
+
     function _quoteClaim(Room storage room, Position storage position) internal view returns (uint256 payout) {
         if (position.claimed) return 0;
 
         if (room.settlement == Settlement.Cancelled) {
-            return _cancelledPayout(position);
+            return position.collateralSpent + position.feePaid + position.liquidityProvided;
         }
 
-        payout = _tradePayout(room, position);
-        payout += _liquidityPayout(room, position);
-    }
-
-    function _cancelledPayout(Position storage position) internal view returns (uint256) {
-        return position.sideAStake + position.sideBStake + position.lpAStake + position.lpBStake + position.feePaid;
-    }
-
-    function _winnerStake(Room storage room, Position storage position) internal view returns (uint256 roomWinner, uint256 userWinner) {
-        if (room.settlement == Settlement.SideA) return (room.sideAStake, position.sideAStake);
-        if (room.settlement == Settlement.SideB) return (room.sideBStake, position.sideBStake);
-        return (0, 0);
-    }
-
-    function _tradePayout(Room storage room, Position storage position) internal view returns (uint256) {
-        (uint256 roomWinner, uint256 userWinner) = _winnerStake(room, position);
-        uint256 totalTradingPot = room.sideAStake + room.sideBStake;
-
-        if (totalTradingPot > 0) {
-            if (roomWinner > 0 && userWinner > 0) {
-                return (userWinner * totalTradingPot) / roomWinner;
-            } else if (roomWinner == 0) {
-                return position.sideAStake + position.sideBStake;
-            }
+        if (room.settlement == Settlement.SideA) {
+            payout += position.sideAShares;
+            payout += _lpPayout(room.reserveA, room.feePool, room.totalLpShares, position.lpShares);
+        } else if (room.settlement == Settlement.SideB) {
+            payout += position.sideBShares;
+            payout += _lpPayout(room.reserveB, room.feePool, room.totalLpShares, position.lpShares);
         }
-
-        return 0;
     }
 
-    function _liquidityPayout(Room storage room, Position storage position) internal view returns (uint256 payout) {
-        uint256 lpStake = position.lpAStake + position.lpBStake;
-        uint256 totalLpStake = room.lpAStake + room.lpBStake;
-
-        if (lpStake > 0) {
-            payout += lpStake;
-            if (totalLpStake > 0) {
-                payout += (lpStake * room.feePool) / totalLpStake;
-            }
-        } else if (totalLpStake == 0 && room.feePool > 0) {
-            (uint256 roomWinner, uint256 userWinner) = _winnerStake(room, position);
-            if (roomWinner > 0 && userWinner > 0) {
-                payout += (userWinner * room.feePool) / roomWinner;
-            }
-        }
+    function _lpPayout(
+        uint256 winningReserve,
+        uint256 feePool,
+        uint256 totalLpShares,
+        uint256 userLpShares
+    ) internal pure returns (uint256) {
+        if (userLpShares == 0 || totalLpShares == 0) return 0;
+        return (userLpShares * (winningReserve + feePool)) / totalLpShares;
     }
 }

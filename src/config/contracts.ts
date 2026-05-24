@@ -1,5 +1,7 @@
 const configuredKickoffAddress = import.meta.env.VITE_KICKOFF_MARKETS_ADDRESS?.trim() ?? ''
 const configuredCollateralAddress = import.meta.env.VITE_COLLATERAL_TOKEN_ADDRESS?.trim() ?? ''
+const configuredMatchClockHookAddress = import.meta.env.VITE_MATCH_CLOCK_HOOK_ADDRESS?.trim() ?? ''
+const configuredMatchOracleAgentAddress = import.meta.env.VITE_MATCH_ORACLE_AGENT_ADDRESS?.trim() ?? ''
 
 export type XLayerNetworkId = 'mainnet' | 'testnet'
 
@@ -44,6 +46,8 @@ export const X_LAYER_NETWORK = X_LAYER_NETWORKS[resolveConfiguredNetwork()]
 
 export const KICKOFF_MARKETS_ADDRESS = configuredKickoffAddress
 export const COLLATERAL_TOKEN_ADDRESS = configuredCollateralAddress
+export const MATCH_CLOCK_HOOK_ADDRESS = configuredMatchClockHookAddress
+export const MATCH_ORACLE_AGENT_ADDRESS = configuredMatchOracleAgentAddress
 
 export function isHexAddress(value: string) {
   return /^0x[a-fA-F0-9]{40}$/.test(value)

@@ -812,6 +812,46 @@ button.network-chip:hover,
   background: rgba(16, 185, 129, 0.08);
 }
 
+.oracle-strip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: -10px 24px 22px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.oracle-strip span {
+  color: var(--label);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.oracle-strip strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.oracle-strip.oracle-watching,
+.oracle-strip.oracle-checking,
+.oracle-strip.oracle-proposed {
+  border-color: var(--accent-dim);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.oracle-strip.oracle-fallback,
+.oracle-strip.oracle-disputed {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.oracle-strip.oracle-finalized {
+  border-color: rgba(110, 212, 199, 0.55);
+}
+
 .back-button {
   width: max-content;
   margin: 22px 24px;
@@ -1422,6 +1462,13 @@ button.network-chip:hover,
   .hook-grid,
   .activity-list {
     padding: 16px;
+  }
+
+  .oracle-strip {
+    align-items: start;
+    flex-direction: column;
+    gap: 6px;
+    margin-inline: 16px;
   }
 
   .detail-stats,

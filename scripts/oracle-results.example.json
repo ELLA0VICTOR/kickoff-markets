@@ -1,0 +1,11 @@
+[
+  {
+    "teamA": "Argentina",
+    "teamB": "France",
+    "homeScore": 2,
+    "awayScore": 1,
+    "winner": "A",
+    "clock": "FT",
+    "source": "official result rehearsal"
+  }
+]

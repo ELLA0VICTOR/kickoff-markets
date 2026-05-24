@@ -8,16 +8,19 @@ import { MarketPage } from './components/product/MarketPage'
 import { type HomeTab, MarketTabs } from './components/product/MarketTabs'
 import { isCollateralTokenConfigured, isKickoffContractConfigured } from './config/contracts'
 import { hookSteps } from './data/markets'
-import type { ActivityRow, MarketPhase, MarketSettlement, MatchMarket, PositionRow, RoomDraft } from './data/markets'
+import type { ActivityRow, FinalMarketSettlement, MarketPhase, MatchMarket, PositionRow, RoomDraft } from './data/markets'
 import {
   addLiquidityTx,
   claimTx,
   createRoomTx,
+  disputeSettlementTx,
   faucetCollateralTx,
+  finalizeSettlementTx,
   loadOnchainState,
   placeTradeTx,
+  proposeSettlementTx,
   readCollateralBalance,
-  settleRoomTx,
+  resolveDisputeTx,
   updatePhaseTx,
   type OnchainState,
 } from './lib/contractClient'
@@ -384,20 +387,71 @@ function App() {
     }
   }
 
-  async function settleMarket(market: MatchMarket, outcome: Exclude<MarketSettlement, 'open'>, score: string, clock: string) {
-    setActionStatus({ state: 'pending', message: 'Settling market on X Layer...' })
+  async function proposeSettlement(market: MatchMarket, outcome: FinalMarketSettlement, score: string, clock: string) {
+    setActionStatus({ state: 'pending', message: 'Proposing settlement on X Layer...' })
     try {
       const wallet = await ensureWalletForContract()
-      const result = await settleRoomTx(wallet.provider, wallet.address, market, outcome, score, clock)
+      const result = await proposeSettlementTx(wallet.provider, wallet.address, market, outcome, score, clock)
       await refreshOnchainState()
       setActionStatus({
         state: 'success',
         mode: 'onchain',
         txHash: result.txHash,
-        message: 'Market settled. Claims are now available.',
+        message: 'Settlement proposed. Dispute window is open.',
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Settlement failed.' })
+      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Settlement proposal failed.' })
+    }
+  }
+
+  async function disputeSettlement(market: MatchMarket) {
+    setActionStatus({ state: 'pending', message: 'Opening settlement dispute...' })
+    try {
+      const wallet = await ensureWalletForContract()
+      const result = await disputeSettlementTx(wallet.provider, wallet.address, market, 'Disputed from Kickoff Markets UI.')
+      await refreshOnchainState()
+      setActionStatus({
+        state: 'success',
+        mode: 'onchain',
+        txHash: result.txHash,
+        message: 'Settlement disputed. Resolver action is required.',
+      })
+    } catch (error) {
+      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Dispute failed.' })
+    }
+  }
+
+  async function finalizeSettlement(market: MatchMarket) {
+    setActionStatus({ state: 'pending', message: 'Finalizing settlement...' })
+    try {
+      const wallet = await ensureWalletForContract()
+      const result = await finalizeSettlementTx(wallet.provider, wallet.address, market)
+      await refreshOnchainState()
+      setActionStatus({
+        state: 'success',
+        mode: 'onchain',
+        txHash: result.txHash,
+        message: 'Settlement finalized. Claims are now available.',
+      })
+    } catch (error) {
+      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Finalize failed.' })
+    }
+  }
+
+  async function resolveDispute(market: MatchMarket, outcome: FinalMarketSettlement, score: string, clock: string) {
+    setActionStatus({ state: 'pending', message: 'Resolving dispute...' })
+    try {
+      const wallet = await ensureWalletForContract()
+      const result = await resolveDisputeTx(wallet.provider, wallet.address, market, outcome, score, clock)
+      await refreshOnchainState()
+      setActionStatus({
+        state: 'success',
+        mode: 'onchain',
+        txHash: result.txHash,
+        message: 'Dispute resolved. Claims are now available.',
+      })
+    } catch (error) {
+      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Dispute resolution failed.' })
     }
   }
 
@@ -467,8 +521,11 @@ function App() {
           onAddLiquidity={addLiquidity}
           onBack={() => setDetailMarketId(undefined)}
           onClaim={claim}
+          onDispute={disputeSettlement}
+          onFinalize={finalizeSettlement}
           onPlaceTrade={placeTrade}
-          onSettle={settleMarket}
+          onResolveDispute={resolveDispute}
+          onSettle={proposeSettlement}
           onUpdatePhase={updatePhase}
         />
       ) : (

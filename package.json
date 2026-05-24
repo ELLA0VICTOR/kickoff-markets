@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "oracle:check": "node scripts/oracle-worker.mjs",
+    "oracle:dry": "node scripts/oracle-worker.mjs --dry-run",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -1,5 +1,15 @@
 export type MarketPhase = 'pre-match' | 'live' | 'halftime' | 'settlement'
-export type MarketSettlement = 'open' | 'cancelled' | 'side-a' | 'side-b'
+export type MarketSettlement =
+  | 'open'
+  | 'proposed-cancel'
+  | 'proposed-a'
+  | 'proposed-b'
+  | 'disputed'
+  | 'cancelled'
+  | 'side-a'
+  | 'side-b'
+
+export type FinalMarketSettlement = 'cancelled' | 'side-a' | 'side-b'
 
 export type TeamSide = {
   code: string
@@ -21,6 +31,7 @@ export type MatchMarket = {
   score: string
   pool: string
   creator: string
+  proposer: string
   status: 'live' | 'open' | 'settling'
   liquidity: number
   volume: number
@@ -29,6 +40,8 @@ export type MatchMarket = {
   baseFeeBps: number
   feePool: number
   claimableAmount: number
+  disputeDeadline: number
+  proposedOutcome: MarketSettlement
   xLayerTx: number
   note: string
   sides: [TeamSide, TeamSide]

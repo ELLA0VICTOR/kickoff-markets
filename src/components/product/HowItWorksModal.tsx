@@ -17,7 +17,7 @@ const steps = [
   {
     kicker: 'Trading',
     title: 'Buy a side or add liquidity',
-    body: 'Choose a team, enter USDC, and route the order through the match pool. LPs can support either room and earn from live flow.',
+    body: 'Choose a team, enter USDC, and route the order through the AMM reserve curve. LPs seed both sides and earn from live flow.',
     signal: 'Trade ready',
     metric: '$0.52',
   },
@@ -30,10 +30,10 @@ const steps = [
   },
   {
     kicker: 'X Layer proof',
-    title: 'Settle with receipts',
-    body: 'Swaps, LP adds, hook updates, and claims become receipt-visible X Layer transactions for judges and users to verify.',
-    signal: 'On-chain',
-    metric: 'X Layer',
+    title: 'Oracle first, fallback ready',
+    body: 'After full-time, the oracle path proposes the result. If data is unavailable, creator fallback still uses the optimistic dispute window.',
+    signal: 'Oracle lane',
+    metric: 'FT',
   },
 ]
 
@@ -99,7 +99,7 @@ export function HowItWorksModal({ open, onClose }: HowItWorksModalProps) {
             <div className="how-token-row">
               <span className="how-token">ARG</span>
               <span className="how-token">FRA</span>
-              <span className="how-token">v4</span>
+              <span className="how-token">ORC</span>
               <span className="how-token">OKB</span>
               <small>+38K tx</small>
             </div>

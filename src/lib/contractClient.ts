@@ -5,7 +5,7 @@ import {
   isCollateralTokenConfigured,
   isKickoffContractConfigured,
 } from '../config/contracts'
-import type { ActivityRow, MarketPhase, MarketSettlement, MatchMarket, PositionRow, RoomDraft } from '../data/markets'
+import type { ActivityRow, FinalMarketSettlement, MarketPhase, MarketSettlement, MatchMarket, PositionRow, RoomDraft } from '../data/markets'
 import type { EthereumProvider } from './wallet'
 
 export type ContractActionResult = {
@@ -30,10 +30,10 @@ type RpcLog = {
 }
 
 type ContractPosition = {
-  sideAStake: bigint
-  sideBStake: bigint
-  lpAStake: bigint
-  lpBStake: bigint
+  sideAShares: bigint
+  sideBShares: bigint
+  lpShares: bigint
+  liquidityProvided: bigint
   feePaid: bigint
   claimed: boolean
   claimedAmount: bigint
@@ -48,16 +48,18 @@ type ContractRoom = {
   score: string
   clock: string
   creator: string
+  proposer: string
   phase: MarketPhase
   settlement: MarketSettlement
+  proposedOutcome: MarketSettlement
   baseFeeBps: number
   hookFeeBps: number
-  sideAStake: bigint
-  sideBStake: bigint
-  lpAStake: bigint
-  lpBStake: bigint
+  reserveA: bigint
+  reserveB: bigint
+  totalLpShares: bigint
   feePool: bigint
   createdAt: bigint
+  disputeDeadline: bigint
   settledAt: bigint
 }
 
@@ -78,7 +80,10 @@ const CREATE_ROOM_SIG = 'createRoom(string,string,string)'
 const PLACE_TRADE_SIG = 'placeTrade(bytes32,uint8,uint256)'
 const ADD_LIQUIDITY_SIG = 'addLiquidity(bytes32,uint8,uint256)'
 const UPDATE_PHASE_SIG = 'updatePhase(bytes32,uint8,string,string,uint16)'
-const SETTLE_SIG = 'settle(bytes32,uint8,string,string)'
+const PROPOSE_SETTLEMENT_SIG = 'proposeSettlement(bytes32,uint8,string,string)'
+const DISPUTE_SETTLEMENT_SIG = 'disputeSettlement(bytes32,string)'
+const FINALIZE_SETTLEMENT_SIG = 'finalizeSettlement(bytes32)'
+const RESOLVE_DISPUTE_SIG = 'resolveDispute(bytes32,uint8,string,string)'
 const CLAIM_SIG = 'claim(bytes32)'
 const ALLOWANCE_SIG = 'allowance(address,address)'
 const APPROVE_SIG = 'approve(address,uint256)'
@@ -91,6 +96,8 @@ const EVENT_SIGNATURES = {
   phase: 'PhaseUpdated(bytes32,uint8,string,string,uint16)',
   room: 'RoomCreated(bytes32,string,string,string,address)',
   settled: 'RoomSettled(bytes32,uint8,string,string)',
+  settlementDisputed: 'SettlementDisputed(bytes32,address,string)',
+  settlementProposed: 'SettlementProposed(bytes32,address,uint8,uint256,string,string)',
   trade: 'TradePlaced(bytes32,address,uint8,uint256,uint256,uint256,uint16)',
 }
 
@@ -250,13 +257,17 @@ function phaseFromContract(value: bigint): MarketPhase {
 }
 
 function settlementFromContract(value: bigint): MarketSettlement {
-  if (value === 1n) return 'cancelled'
-  if (value === 2n) return 'side-a'
-  if (value === 3n) return 'side-b'
+  if (value === 1n) return 'proposed-cancel'
+  if (value === 2n) return 'proposed-a'
+  if (value === 3n) return 'proposed-b'
+  if (value === 4n) return 'disputed'
+  if (value === 5n) return 'cancelled'
+  if (value === 6n) return 'side-a'
+  if (value === 7n) return 'side-b'
   return 'open'
 }
 
-function settlementToContract(value: MarketSettlement) {
+function finalSettlementToContract(value: FinalMarketSettlement) {
   if (value === 'cancelled') return 1
   if (value === 'side-a') return 2
   if (value === 'side-b') return 3
@@ -277,6 +288,8 @@ function marketStatus(phase: MarketPhase, settlement: MarketSettlement): MatchMa
 }
 
 function marketStage(phase: MarketPhase, settlement: MarketSettlement) {
+  if (settlement === 'proposed-a' || settlement === 'proposed-b' || settlement === 'proposed-cancel') return 'Proposed room'
+  if (settlement === 'disputed') return 'Disputed room'
   if (settlement === 'side-a' || settlement === 'side-b') return 'Settled room'
   if (settlement === 'cancelled') return 'Cancelled room'
   if (phase === 'live') return 'Live room'
@@ -285,6 +298,10 @@ function marketStage(phase: MarketPhase, settlement: MarketSettlement) {
 }
 
 function marketNote(room: ContractRoom) {
+  if (room.settlement === 'proposed-a') return `${room.teamA} proposed as winner. Dispute window is open.`
+  if (room.settlement === 'proposed-b') return `${room.teamB} proposed as winner. Dispute window is open.`
+  if (room.settlement === 'proposed-cancel') return 'Cancellation proposed. Dispute window is open.'
+  if (room.settlement === 'disputed') return 'Settlement disputed. Creator or oracle agent must resolve the room.'
   if (room.settlement === 'side-a') return `${room.teamA} settled as winner. Claims are open against escrowed collateral.`
   if (room.settlement === 'side-b') return `${room.teamB} settled as winner. Claims are open against escrowed collateral.`
   if (room.settlement === 'cancelled') return 'Room cancelled. Traders and LPs can reclaim escrowed collateral.'
@@ -294,8 +311,8 @@ function marketNote(room: ContractRoom) {
 }
 
 function sparklineFromRoom(room: ContractRoom) {
-  const totalStake = room.sideAStake + room.sideBStake
-  const aConviction = totalStake > 0n ? Math.round((Number(room.sideAStake) / Number(totalStake)) * 100) : 50
+  const totalReserve = room.reserveA + room.reserveB
+  const aConviction = totalReserve > 0n ? Math.round((Number(room.reserveB) / Number(totalReserve)) * 100) : 50
   return [50, 50, Math.max(5, aConviction - 6), Math.max(5, aConviction - 2), aConviction, Math.min(95, aConviction + 3)]
 }
 
@@ -435,11 +452,13 @@ async function readRoom(roomId: string): Promise<ContractRoom> {
     baseFeeBps: Number(readUint(stateResult, 4)),
     hookFeeBps: Number(readUint(stateResult, 5)),
     settledAt: readUint(stateResult, 6),
-    sideAStake: readUint(totalsResult, 0),
-    sideBStake: readUint(totalsResult, 1),
-    lpAStake: readUint(totalsResult, 2),
-    lpBStake: readUint(totalsResult, 3),
-    feePool: readUint(totalsResult, 4),
+    proposedOutcome: settlementFromContract(readUint(stateResult, 7)),
+    disputeDeadline: readUint(stateResult, 8),
+    proposer: readAddress(stateResult, 9),
+    reserveA: readUint(totalsResult, 0),
+    reserveB: readUint(totalsResult, 1),
+    totalLpShares: readUint(totalsResult, 2),
+    feePool: readUint(totalsResult, 3),
   }
 }
 
@@ -459,10 +478,10 @@ async function readPosition(roomId: string, walletAddress?: string): Promise<Con
   const quoteResult = await callContract(KICKOFF_MARKETS_ADDRESS, quoteData)
 
   return {
-    sideAStake: readUint(positionResult, 0),
-    sideBStake: readUint(positionResult, 1),
-    lpAStake: readUint(positionResult, 2),
-    lpBStake: readUint(positionResult, 3),
+    sideAShares: readUint(positionResult, 0),
+    sideBShares: readUint(positionResult, 1),
+    lpShares: readUint(positionResult, 2),
+    liquidityProvided: readUint(positionResult, 3),
     feePaid: readUint(positionResult, 4),
     claimed: readBool(positionResult, 5),
     claimedAmount: readUint(positionResult, 6),
@@ -471,13 +490,10 @@ async function readPosition(roomId: string, walletAddress?: string): Promise<Con
 }
 
 function roomToMarket(room: ContractRoom, txCount: number, traderCount: number, position?: ContractPosition): MatchMarket {
-  const totalStake = room.sideAStake + room.sideBStake
-  const sideAPrice = totalStake > 0n ? Number(room.sideAStake) / Number(totalStake) : 0.5
+  const totalReserve = room.reserveA + room.reserveB
+  const sideAPrice = totalReserve > 0n ? Number(room.reserveB) / Number(totalReserve) : 0.5
   const sideBPrice = 1 - sideAPrice
-  const sideALiquidity = room.sideAStake + room.lpAStake
-  const sideBLiquidity = room.sideBStake + room.lpBStake
-  const totalLiquidity = room.lpAStake + room.lpBStake
-  const totalVolume = room.sideAStake + room.sideBStake + room.feePool
+  const totalVolume = room.reserveA + room.reserveB + room.feePool
   const sideAConviction = Math.round(sideAPrice * 100)
 
   return {
@@ -491,14 +507,17 @@ function roomToMarket(room: ContractRoom, txCount: number, traderCount: number, 
     score: room.score,
     pool: `${cleanTeamCode(room.teamA)}/${cleanTeamCode(room.teamB)}`,
     creator: room.creator,
+    proposer: room.proposer,
     status: marketStatus(room.phase, room.settlement),
-    liquidity: tokenUnitsToNumber(totalLiquidity),
+    liquidity: tokenUnitsToNumber(room.totalLpShares),
     volume: tokenUnitsToNumber(totalVolume),
     traders: traderCount,
     hookFeeBps: room.hookFeeBps,
     baseFeeBps: room.baseFeeBps,
     feePool: tokenUnitsToNumber(room.feePool),
     claimableAmount: tokenUnitsToNumber(position?.claimableAmount ?? 0n),
+    disputeDeadline: Number(room.disputeDeadline),
+    proposedOutcome: room.proposedOutcome,
     xLayerTx: txCount,
     note: marketNote(room),
     sides: [
@@ -507,7 +526,7 @@ function roomToMarket(room: ContractRoom, txCount: number, traderCount: number, 
         name: room.teamA,
         price: sideAPrice,
         change: 0,
-        liquidity: tokenUnitsToNumber(sideALiquidity),
+        liquidity: tokenUnitsToNumber(room.reserveA),
         conviction: sideAConviction,
       },
       {
@@ -515,7 +534,7 @@ function roomToMarket(room: ContractRoom, txCount: number, traderCount: number, 
         name: room.teamB,
         price: sideBPrice,
         change: 0,
-        liquidity: tokenUnitsToNumber(sideBLiquidity),
+        liquidity: tokenUnitsToNumber(room.reserveB),
         conviction: 100 - sideAConviction,
       },
     ],
@@ -529,11 +548,11 @@ function positionRowsFor(room: ContractRoom, market: MatchMarket, position?: Con
   const rows: PositionRow[] = []
   const status = market.settlement === 'open' || position.claimableAmount === 0n ? 'open' : 'claimable'
 
-  if (position.sideAStake > 0n) {
+  if (position.sideAShares > 0n) {
     rows.push({
       market: market.pool,
       side: room.teamA,
-      size: `$${formatToken(position.sideAStake)}`,
+      size: `${formatToken(position.sideAShares)} shares`,
       entry: `$${market.sides[0].price.toFixed(2)}`,
       mark: market.settlement,
       pnl: `$${formatToken(position.claimableAmount)}`,
@@ -541,11 +560,11 @@ function positionRowsFor(room: ContractRoom, market: MatchMarket, position?: Con
     })
   }
 
-  if (position.sideBStake > 0n) {
+  if (position.sideBShares > 0n) {
     rows.push({
       market: market.pool,
       side: room.teamB,
-      size: `$${formatToken(position.sideBStake)}`,
+      size: `${formatToken(position.sideBShares)} shares`,
       entry: `$${market.sides[1].price.toFixed(2)}`,
       mark: market.settlement,
       pnl: `$${formatToken(position.claimableAmount)}`,
@@ -553,11 +572,11 @@ function positionRowsFor(room: ContractRoom, market: MatchMarket, position?: Con
     })
   }
 
-  if (position.lpAStake + position.lpBStake > 0n) {
+  if (position.lpShares > 0n) {
     rows.push({
       market: market.pool,
       side: 'LP position',
-      size: `$${formatToken(position.lpAStake + position.lpBStake)}`,
+      size: `$${formatToken(position.liquidityProvided)}`,
       entry: `${market.hookFeeBps} bps`,
       mark: market.settlement === 'open' ? 'active' : 'claimable',
       pnl: `$${formatToken(position.claimableAmount)}`,
@@ -575,6 +594,8 @@ async function loadActivityLogs(roomLabels: Map<string, string>) {
     phase: await eventTopic(EVENT_SIGNATURES.phase),
     room: await eventTopic(EVENT_SIGNATURES.room),
     settled: await eventTopic(EVENT_SIGNATURES.settled),
+    settlementDisputed: await eventTopic(EVENT_SIGNATURES.settlementDisputed),
+    settlementProposed: await eventTopic(EVENT_SIGNATURES.settlementProposed),
     trade: await eventTopic(EVENT_SIGNATURES.trade),
   }
   const logs = await rpcRequest<RpcLog[]>('eth_getLogs', [
@@ -667,6 +688,37 @@ async function loadActivityLogs(roomLabels: Map<string, string>) {
         wallet: 'creator',
         amount: outcome,
         fee: '12 bps',
+        tx,
+        status: 'confirmed',
+      })
+      continue
+    }
+
+    if (topic === topics.settlementProposed) {
+      const proposer = topicToAddress(log.topics[2])
+      const outcome = settlementFromContract(readUint(log.data, 0))
+      activityRows.unshift({
+        time,
+        kind: 'PROPOSE',
+        market,
+        wallet: shortAddress(proposer),
+        amount: outcome,
+        fee: 'window',
+        tx,
+        status: 'confirmed',
+      })
+      continue
+    }
+
+    if (topic === topics.settlementDisputed) {
+      const disputer = topicToAddress(log.topics[2])
+      activityRows.unshift({
+        time,
+        kind: 'DISPUTE',
+        market,
+        wallet: shortAddress(disputer),
+        amount: 'opened',
+        fee: '-',
         tx,
         status: 'confirmed',
       })
@@ -843,18 +895,62 @@ export async function updatePhaseTx(
   return { mode: 'onchain', txHash }
 }
 
-export async function settleRoomTx(
+export async function proposeSettlementTx(
   provider: EthereumProvider,
   from: string,
   market: MatchMarket,
-  outcome: Exclude<MarketSettlement, 'open'>,
+  outcome: FinalMarketSettlement,
   score: string,
   clock: string,
 ): Promise<ContractActionResult> {
   requireKickoffAddress()
-  const data = await encodeCall(SETTLE_SIG, [
+  const data = await encodeCall(PROPOSE_SETTLEMENT_SIG, [
     { kind: 'bytes32', value: market.roomId },
-    { kind: 'uint', value: settlementToContract(outcome) },
+    { kind: 'uint', value: finalSettlementToContract(outcome) },
+    { kind: 'string', value: score },
+    { kind: 'string', value: clock },
+  ])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash }
+}
+
+export async function disputeSettlementTx(
+  provider: EthereumProvider,
+  from: string,
+  market: MatchMarket,
+  reason: string,
+): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const data = await encodeCall(DISPUTE_SETTLEMENT_SIG, [
+    { kind: 'bytes32', value: market.roomId },
+    { kind: 'string', value: reason },
+  ])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash }
+}
+
+export async function finalizeSettlementTx(provider: EthereumProvider, from: string, market: MatchMarket): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const data = await encodeCall(FINALIZE_SETTLEMENT_SIG, [{ kind: 'bytes32', value: market.roomId }])
+  const txHash = await sendTransaction(provider, from, KICKOFF_MARKETS_ADDRESS, data)
+  await waitForTransaction(txHash)
+  return { mode: 'onchain', txHash }
+}
+
+export async function resolveDisputeTx(
+  provider: EthereumProvider,
+  from: string,
+  market: MatchMarket,
+  outcome: FinalMarketSettlement,
+  score: string,
+  clock: string,
+): Promise<ContractActionResult> {
+  requireKickoffAddress()
+  const data = await encodeCall(RESOLVE_DISPUTE_SIG, [
+    { kind: 'bytes32', value: market.roomId },
+    { kind: 'uint', value: finalSettlementToContract(outcome) },
     { kind: 'string', value: score },
     { kind: 'string', value: clock },
   ])
