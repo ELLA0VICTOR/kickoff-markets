@@ -1,3 +1,5 @@
+import { X_LAYER_NETWORK } from '../config/contracts'
+
 export type WalletStatus = 'idle' | 'connecting' | 'connected'
 
 export type WalletSession = {
@@ -23,15 +25,15 @@ type WalletWindow = Window &
   }
 
 const X_LAYER_CHAIN = {
-  chainId: '0xc4',
-  chainName: 'X Layer Mainnet',
+  chainId: X_LAYER_NETWORK.chainId,
+  chainName: X_LAYER_NETWORK.name,
   nativeCurrency: {
     name: 'OKB',
     symbol: 'OKB',
     decimals: 18,
   },
-  rpcUrls: ['https://rpc.xlayer.tech'],
-  blockExplorerUrls: ['https://www.oklink.com/xlayer'],
+  rpcUrls: X_LAYER_NETWORK.rpcUrls,
+  blockExplorerUrls: X_LAYER_NETWORK.blockExplorerUrls,
 }
 
 export function getWalletProvider() {
@@ -46,7 +48,7 @@ export function shortAddress(address: string) {
 }
 
 export function isXLayer(chainId?: string) {
-  return chainId?.toLowerCase() === X_LAYER_CHAIN.chainId
+  return chainId?.toLowerCase() === X_LAYER_CHAIN.chainId.toLowerCase()
 }
 
 export async function connectInjectedWallet(provider: EthereumProvider): Promise<WalletSession> {

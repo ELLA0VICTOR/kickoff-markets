@@ -120,10 +120,11 @@ copy .env.example .env
 Set the contract address after deploying `KickoffMarkets.sol`:
 
 ```txt
+VITE_X_LAYER_NETWORK=testnet
 VITE_KICKOFF_MARKETS_ADDRESS=0xYourDeployedContract
 ```
 
-Leave it blank to run in demo mode.
+Use `testnet` for rehearsals and `mainnet` for the final hackathon deployment. Leave `VITE_KICKOFF_MARKETS_ADDRESS` blank to run in demo mode.
 
 ## Local Development
 
@@ -146,6 +147,21 @@ npm run lint
 
 ## Deployment
 
+### 0. Wallet and Network
+
+Recommended first deploy: X Layer testnet. Move to mainnet only after the full flow is verified.
+
+1. Install OKX Wallet from the official download page or Chrome Web Store.
+2. Create a fresh deployer wallet or import an existing wallet.
+3. Back up the seed phrase offline. Never paste it into the repo, terminal, README, or chat.
+4. Switch to X Layer testnet.
+5. Claim testnet OKB from the X Layer faucet for gas.
+
+| Network | Env value | Chain ID | RPC | Explorer | Faucet |
+| --- | --- | --- | --- | --- | --- |
+| X Layer testnet | `testnet` | `1952` / `0x7a0` | `https://testrpc.xlayer.tech/terigon` | `https://www.okx.com/web3/explorer/xlayer-test` | `https://web3.okx.com/xlayer/faucet` |
+| X Layer mainnet | `mainnet` | `196` / `0xc4` | `https://rpc.xlayer.tech` | `https://www.okx.com/web3/explorer/xlayer` | Use real OKB for gas |
+
 ### 1. Deploy Contracts
 
 Recommended deployment path for hackathon speed: Remix + OKX Wallet.
@@ -154,26 +170,17 @@ Recommended deployment path for hackathon speed: Remix + OKX Wallet.
 2. Create or upload `contracts/KickoffMarkets.sol`.
 3. Compile with Solidity `0.8.24` or newer compatible `0.8.x`.
 4. Connect OKX Wallet or another EVM wallet.
-5. Switch wallet to X Layer.
+5. Switch wallet to the same X Layer network set in `.env`.
 6. Deploy `KickoffMarkets`.
 7. Copy the deployed contract address.
 8. Optional: deploy `MatchClockHook` with your wallet address as `initialOperator`.
-
-X Layer mainnet details:
-
-```txt
-Chain ID: 196
-Hex Chain ID: 0xc4
-RPC: https://rpc.xlayer.tech
-Explorer: https://www.oklink.com/xlayer
-Gas token: OKB
-```
 
 ### 2. Configure Frontend
 
 Add the deployed `KickoffMarkets` address to `.env`:
 
 ```txt
+VITE_X_LAYER_NETWORK=testnet
 VITE_KICKOFF_MARKETS_ADDRESS=0xYourDeployedContract
 ```
 
@@ -193,7 +200,7 @@ Build locally first:
 npm run build
 ```
 
-Then deploy the Vite app to Vercel, Netlify, or another static host. Configure the same `VITE_KICKOFF_MARKETS_ADDRESS` environment variable in the hosting dashboard.
+Then deploy the Vite app to Vercel, Netlify, or another static host. Configure the same `VITE_X_LAYER_NETWORK` and `VITE_KICKOFF_MARKETS_ADDRESS` environment variables in the hosting dashboard.
 
 ## Contract Surface
 

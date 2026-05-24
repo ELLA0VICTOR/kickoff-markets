@@ -14,5 +14,6 @@ Current frontend calls:
 Deploy `KickoffMarkets.sol` first, then put the deployed address in `.env`:
 
 ```txt
+VITE_X_LAYER_NETWORK=testnet
 VITE_KICKOFF_MARKETS_ADDRESS=0x...
 ```

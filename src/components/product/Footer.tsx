@@ -34,6 +34,9 @@ export function Footer({ onCreateRoom, onHowItWorks }: FooterProps) {
         <a href="https://web3.okx.com/xlayer" target="_blank" rel="noreferrer">
           X Layer
         </a>
+        <a href="https://web3.okx.com/xlayer/faucet" target="_blank" rel="noreferrer">
+          Testnet faucet
+        </a>
         <a href="https://developers.uniswap.org/docs/protocols/v4/overview" target="_blank" rel="noreferrer">
           Uniswap v4
         </a>

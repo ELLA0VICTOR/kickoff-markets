@@ -1,4 +1,5 @@
 import { HelpCircle, Search, Wallet } from 'lucide-react'
+import { X_LAYER_NETWORK } from '../../config/contracts'
 import type { WalletStatus } from '../../lib/wallet'
 import { KickoffMark } from './KickoffMark'
 
@@ -33,6 +34,8 @@ export function AppTopbar({
   onWalletCopy,
   onSwitchNetwork,
 }: AppTopbarProps) {
+  const networkLabel = X_LAYER_NETWORK.name.replace('X Layer ', '')
+
   return (
     <header className="app-topbar">
       <a className="brand" href="#" aria-label="Kickoff Markets home">
@@ -57,7 +60,7 @@ export function AppTopbar({
           <span className="wide-label">How it works?</span>
         </button>
         <button className={isXLayer ? 'network-chip is-active' : 'network-chip'} type="button" onClick={onSwitchNetwork}>
-          {isXLayer ? 'X Layer' : 'Switch X Layer'}
+          {isXLayer ? networkLabel : `Switch ${networkLabel}`}
         </button>
         <button
           className="wallet-button"
@@ -80,7 +83,7 @@ export function AppTopbar({
               Copy address
             </button>
             <button type="button" onClick={onSwitchNetwork}>
-              Switch to X Layer
+              Switch to {X_LAYER_NETWORK.name}
             </button>
             <button type="button" onClick={onWalletDisconnect}>
               Disconnect

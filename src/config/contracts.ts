@@ -1,11 +1,45 @@
 const configuredKickoffAddress = import.meta.env.VITE_KICKOFF_MARKETS_ADDRESS?.trim() ?? ''
 
-export const X_LAYER_MAINNET = {
-  chainId: '0xc4',
-  decimalChainId: 196,
-  explorerTxBase: 'https://www.oklink.com/xlayer/tx',
-  name: 'X Layer',
+export type XLayerNetworkId = 'mainnet' | 'testnet'
+
+type XLayerNetworkConfig = {
+  id: XLayerNetworkId
+  name: string
+  chainId: string
+  decimalChainId: number
+  rpcUrls: string[]
+  blockExplorerUrls: string[]
+  explorerTxBase: string
+  faucetUrl?: string
 }
+
+export const X_LAYER_NETWORKS = {
+  mainnet: {
+    id: 'mainnet',
+    name: 'X Layer Mainnet',
+    chainId: '0xc4',
+    decimalChainId: 196,
+    rpcUrls: ['https://rpc.xlayer.tech', 'https://xlayerrpc.okx.com'],
+    blockExplorerUrls: ['https://www.okx.com/web3/explorer/xlayer'],
+    explorerTxBase: 'https://www.okx.com/web3/explorer/xlayer/tx',
+  },
+  testnet: {
+    id: 'testnet',
+    name: 'X Layer Testnet',
+    chainId: '0x7a0',
+    decimalChainId: 1952,
+    rpcUrls: ['https://testrpc.xlayer.tech/terigon', 'https://xlayertestrpc.okx.com/terigon'],
+    blockExplorerUrls: ['https://www.okx.com/web3/explorer/xlayer-test'],
+    explorerTxBase: 'https://www.okx.com/web3/explorer/xlayer-test/tx',
+    faucetUrl: 'https://web3.okx.com/xlayer/faucet',
+  },
+} satisfies Record<XLayerNetworkId, XLayerNetworkConfig>
+
+function resolveConfiguredNetwork(): XLayerNetworkId {
+  return import.meta.env.VITE_X_LAYER_NETWORK?.trim().toLowerCase() === 'mainnet' ? 'mainnet' : 'testnet'
+}
+
+export const X_LAYER_NETWORK = X_LAYER_NETWORKS[resolveConfiguredNetwork()]
 
 export const KICKOFF_MARKETS_ADDRESS = configuredKickoffAddress
 
@@ -19,5 +53,5 @@ export function isKickoffContractConfigured() {
 
 export function explorerTxUrl(txHash?: string) {
   if (!txHash) return undefined
-  return `${X_LAYER_MAINNET.explorerTxBase}/${txHash}`
+  return `${X_LAYER_NETWORK.explorerTxBase}/${txHash}`
 }
