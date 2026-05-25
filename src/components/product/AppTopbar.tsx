@@ -60,7 +60,8 @@ export function AppTopbar({
           <span className="wide-label">How it works?</span>
         </button>
         <button className={isXLayer ? 'network-chip is-active' : 'network-chip'} type="button" onClick={onSwitchNetwork}>
-          {isXLayer ? networkLabel : `Switch ${networkLabel}`}
+          <span className="wide-label">{isXLayer ? networkLabel : `Switch ${networkLabel}`}</span>
+          <span className="short-label">{isXLayer ? networkLabel : 'Switch'}</span>
         </button>
         <button
           className="wallet-button"
