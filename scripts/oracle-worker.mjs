@@ -1,29 +1,50 @@
 #!/usr/bin/env node
 import dns from 'node:dns'
 import fs from 'node:fs'
-import http from 'node:http'
+import nodeHttp from 'node:http'
 import path from 'node:path'
+import {
+  createPublicClient,
+  createWalletClient,
+  defineChain,
+  encodeFunctionData,
+  http as viemHttp,
+  parseAbi,
+} from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 
 dns.setDefaultResultOrder('ipv4first')
 
 const NETWORKS = {
   mainnet: {
+    id: 196,
     name: 'X Layer Mainnet',
     rpcUrls: ['https://rpc.xlayer.tech', 'https://xlayerrpc.okx.com'],
   },
   testnet: {
+    id: 1952,
     name: 'X Layer Testnet',
     rpcUrls: ['https://testrpc.xlayer.tech/terigon', 'https://xlayertestrpc.okx.com/terigon'],
   },
 }
+
+const MARKET_ABI = parseAbi([
+  'function createRoom(string teamA,string teamB,string kickoff) returns (bytes32)',
+  'function finalizeSettlement(bytes32 roomId)',
+  'function updatePhase(bytes32 roomId,uint8 phase,string clock,string score,uint16 suggestedFeeBps)',
+])
+
+const ORACLE_AGENT_ABI = parseAbi([
+  'function resolveResult(bytes32 roomId,uint8 outcome,string score,string clock)',
+  'function submitClock(bytes32 roomId,uint8 phase,string clock,string score,uint16 suggestedFeeBps)',
+  'function submitResult(bytes32 roomId,uint8 outcome,string score,string clock)',
+])
 
 const SIGNATURES = {
   roomCount: 'roomCount()',
   roomIdAt: 'roomIdAt(uint256)',
   getRoomMeta: 'getRoomMeta(bytes32)',
   getRoomState: 'getRoomState(bytes32)',
-  submitResult: 'submitResult(bytes32,uint8,string,string)',
-  resolveResult: 'resolveResult(bytes32,uint8,string,string)',
 }
 
 const SELECTORS = {
@@ -31,8 +52,6 @@ const SELECTORS = {
   [SIGNATURES.roomIdAt]: '0x2d9c15e6',
   [SIGNATURES.getRoomMeta]: '0x0e0c4f72',
   [SIGNATURES.getRoomState]: '0x41ac4f6d',
-  [SIGNATURES.submitResult]: '0xe7491b29',
-  [SIGNATURES.resolveResult]: '0xbd32aebb',
 }
 
 const SETTLEMENT = {
@@ -53,22 +72,40 @@ const PHASE = {
   3: 'settlement',
 }
 
+const PHASE_CODE = {
+  'pre-match': 0,
+  live: 1,
+  halftime: 2,
+  settlement: 3,
+}
+
 const OUTCOME = {
   cancel: 1,
   sideA: 2,
   sideB: 3,
 }
 
+const FINAL_STATUSES = new Set(['FINISHED', 'AWARDED'])
+const CANCELLED_STATUSES = new Set(['CANCELLED', 'CANCELED', 'ABANDONED'])
+const POSTPONED_STATUSES = new Set(['POSTPONED', 'SUSPENDED'])
+const LIVE_STATUSES = new Set(['IN_PLAY', 'LIVE'])
+const HALFTIME_STATUSES = new Set(['PAUSED'])
+
 const args = new Set(process.argv.slice(2))
 const jsonMode = args.has('--json')
 const dryRun = args.has('--dry-run') || args.has('--dry')
 const probeMode = args.has('--probe-football-data') || args.has('--probe')
+const importMode = args.has('--import-fixtures') || args.has('--import')
 const watchMode = args.has('--watch')
 const root = process.cwd()
 const env = loadEnv(root)
 const networkId = env.VITE_X_LAYER_NETWORK?.trim().toLowerCase() === 'mainnet' ? 'mainnet' : 'testnet'
 const network = NETWORKS[networkId]
-const rpcUrls = env.X_LAYER_RPC_URL?.trim() ? [env.X_LAYER_RPC_URL.trim()] : network.rpcUrls
+const rpcUrls = env.X_LAYER_RPC_URL?.trim()
+  ? [env.X_LAYER_RPC_URL.trim()]
+  : env.VITE_X_LAYER_RPC_URL?.trim()
+    ? [env.VITE_X_LAYER_RPC_URL.trim()]
+    : network.rpcUrls
 const marketsAddress = env.VITE_KICKOFF_MARKETS_ADDRESS?.trim()
 const oracleAgentAddress = env.VITE_MATCH_ORACLE_AGENT_ADDRESS?.trim()
 const providerName = env.ORACLE_PROVIDER?.trim().toLowerCase() || 'manual'
@@ -81,7 +118,22 @@ const probeCompetition = readArg('--competition') || env.ORACLE_PROBE_COMPETITIO
 const probeDateFrom = readArg('--date-from') || env.ORACLE_PROBE_DATE_FROM || '2026-06-11'
 const probeDateTo = readArg('--date-to') || env.ORACLE_PROBE_DATE_TO || '2026-06-18'
 const probeStatus = readArg('--status') || env.ORACLE_PROBE_STATUS || ''
+const importCompetition = readArg('--competition') || env.ORACLE_IMPORT_COMPETITION || env.ORACLE_FOOTBALL_DATA_COMPETITION || 'WC'
+const importDateFrom = readArg('--date-from') || env.ORACLE_IMPORT_DATE_FROM || probeDateFrom
+const importDateTo = readArg('--date-to') || env.ORACLE_IMPORT_DATE_TO || probeDateTo
+const importStatus = readArg('--status') || env.ORACLE_IMPORT_STATUS || ''
+const importLimit = Math.max(1, Number(readArg('--limit') || env.ORACLE_IMPORT_LIMIT || 32))
+const clockAutomation = readBoolean(env.ORACLE_CLOCK_AUTOMATION, true)
+const settlementAutomation = readBoolean(env.ORACLE_SETTLEMENT_AUTOMATION, true)
+const finalizeAutomation = readBoolean(env.ORACLE_FINALIZE_AUTOMATION, true)
+const clockTarget = (env.ORACLE_CLOCK_TARGET || 'markets').trim().toLowerCase()
+const clockAuthorityOverride = readBoolean(env.ORACLE_CLOCK_AUTHORIZED, false)
+const phaseUpdateMinutes = Math.max(1, Number(env.ORACLE_PHASE_UPDATE_MINUTES || 5))
+const autoSubmit = !dryRun && (args.has('--autosubmit') || args.has('--submit') || readBoolean(env.ORACLE_AUTOSUBMIT, false))
 const startedAt = new Date().toISOString()
+const footballDataCache = new Map()
+
+let walletRuntime
 let stopping = false
 let lastState = {
   status: 'starting',
@@ -90,7 +142,11 @@ let lastState = {
   nextRunAt: undefined,
   runs: 0,
   rooms: 0,
+  actions: 0,
+  submitted: 0,
+  failed: 0,
   resultReady: 0,
+  clockReady: 0,
   fallbackReady: 0,
   pending: 0,
   handled: 0,
@@ -104,6 +160,11 @@ function readArg(name) {
   const prefix = `${name}=`
   const matched = process.argv.find((arg) => arg.startsWith(prefix))
   return matched ? matched.slice(prefix.length) : undefined
+}
+
+function readBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback
+  return ['1', 'true', 'yes', 'y', 'on'].includes(String(value).trim().toLowerCase())
 }
 
 function loadEnv(basePath) {
@@ -219,6 +280,47 @@ function isAddress(value) {
   return /^0x[a-fA-F0-9]{40}$/.test(value || '')
 }
 
+function sameAddress(a, b) {
+  return String(a || '').toLowerCase() === String(b || '').toLowerCase()
+}
+
+function cleanPrivateKey(value) {
+  if (!value) return undefined
+  const trimmed = value.trim()
+  const prefixed = trimmed.startsWith('0x') ? trimmed : `0x${trimmed}`
+  if (!/^0x[a-fA-F0-9]{64}$/.test(prefixed)) {
+    throw new Error('ORACLE_OPERATOR_PRIVATE_KEY must be a 32-byte hex private key.')
+  }
+  return prefixed
+}
+
+function getWalletRuntime() {
+  if (!autoSubmit) return undefined
+  if (walletRuntime) return walletRuntime
+
+  const privateKey = cleanPrivateKey(env.ORACLE_OPERATOR_PRIVATE_KEY)
+  if (!privateKey) return undefined
+
+  const chain = defineChain({
+    id: network.id,
+    name: network.name,
+    nativeCurrency: { name: 'OKB', symbol: 'OKB', decimals: 18 },
+    rpcUrls: {
+      default: { http: rpcUrls },
+    },
+  })
+  const account = privateKeyToAccount(privateKey)
+  const transport = viemHttp(rpcUrls[0])
+
+  walletRuntime = {
+    account,
+    publicClient: createPublicClient({ chain, transport }),
+    walletClient: createWalletClient({ account, chain, transport }),
+  }
+
+  return walletRuntime
+}
+
 async function rpcRequest(method, params = []) {
   const errors = []
 
@@ -252,7 +354,7 @@ async function selector(signature) {
   return value
 }
 
-async function encodeCall(signature, argsToEncode = []) {
+async function encodeReadCall(signature, argsToEncode = []) {
   return `${await selector(signature)}${encodeArgs(argsToEncode)}`
 }
 
@@ -261,21 +363,21 @@ async function callContract(to, data) {
 }
 
 async function readRoomCount() {
-  const data = await encodeCall(SIGNATURES.roomCount)
+  const data = await encodeReadCall(SIGNATURES.roomCount)
   const result = await callContract(marketsAddress, data)
   return Number(readUint(result, 0))
 }
 
 async function readRoomIdAt(index) {
-  const data = await encodeCall(SIGNATURES.roomIdAt, [{ kind: 'uint', value: index }])
+  const data = await encodeReadCall(SIGNATURES.roomIdAt, [{ kind: 'uint', value: index }])
   const result = await callContract(marketsAddress, data)
   return ensure0x(wordAt(result, 0))
 }
 
 async function readRoom(roomId) {
   const [metaResult, stateResult] = await Promise.all([
-    encodeCall(SIGNATURES.getRoomMeta, [{ kind: 'bytes32', value: roomId }]).then((data) => callContract(marketsAddress, data)),
-    encodeCall(SIGNATURES.getRoomState, [{ kind: 'bytes32', value: roomId }]).then((data) => callContract(marketsAddress, data)),
+    encodeReadCall(SIGNATURES.getRoomMeta, [{ kind: 'bytes32', value: roomId }]).then((data) => callContract(marketsAddress, data)),
+    encodeReadCall(SIGNATURES.getRoomState, [{ kind: 'bytes32', value: roomId }]).then((data) => callContract(marketsAddress, data)),
   ])
 
   return {
@@ -294,14 +396,48 @@ async function readRoom(roomId) {
   }
 }
 
+async function readRooms() {
+  if (!isAddress(marketsAddress)) {
+    throw new Error('Set VITE_KICKOFF_MARKETS_ADDRESS in .env before running the oracle worker.')
+  }
+
+  const count = await readRoomCount()
+  const roomIds = await Promise.all(Array.from({ length: count }, (_, index) => readRoomIdAt(index)))
+  return Promise.all(roomIds.map((roomId) => readRoom(roomId)))
+}
+
 function normalizeName(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const normalized = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]/g, '')
+
+  const aliases = {
+    bosniaherzegovina: 'bosnia',
+    bosniaandherzegovina: 'bosnia',
+    capeverdeislands: 'capeverde',
+    coteivoire: 'ivorycoast',
+    curacao: 'curacao',
+    korearepublic: 'southkorea',
+    unitedstates: 'usa',
+    unitedstatesofamerica: 'usa',
+  }
+
+  return aliases[normalized] || normalized
 }
 
 function teamMatch(a, b) {
   const left = normalizeName(a)
   const right = normalizeName(b)
-  return left.includes(right) || right.includes(left)
+  if (!left || !right) return false
+  return left === right || left.includes(right) || right.includes(left)
+}
+
+function fixtureKey(teamA, teamB, kickoff) {
+  const time = Number.isFinite(Date.parse(kickoff)) ? new Date(kickoff).toISOString() : kickoff
+  return `${normalizeName(teamA)}:${normalizeName(teamB)}:${time}`
 }
 
 function expectedResultTimestamp(room) {
@@ -315,11 +451,27 @@ function scoreText(home, away) {
   return `${home} - ${away}`
 }
 
+function readScorePair(score) {
+  if (!score) return undefined
+  const home = Number(score.home)
+  const away = Number(score.away)
+  if (!Number.isFinite(home) || !Number.isFinite(away)) return undefined
+  return { home, away, text: scoreText(home, away) }
+}
+
+function scoreFromFootballMatch(match) {
+  return (
+    readScorePair(match?.score?.fullTime) ||
+    readScorePair(match?.score?.regularTime) ||
+    readScorePair(match?.score?.halfTime)
+  )
+}
+
 function outcomeFromWinner(winner, homeScore, awayScore) {
   const normalized = String(winner || '').toUpperCase()
   if (normalized === 'A' || normalized === 'SIDE_A' || normalized === 'HOME_TEAM') return OUTCOME.sideA
   if (normalized === 'B' || normalized === 'SIDE_B' || normalized === 'AWAY_TEAM') return OUTCOME.sideB
-  if (normalized === 'CANCEL' || normalized === 'CANCELLED' || normalized === 'DRAW') return OUTCOME.cancel
+  if (normalized === 'CANCEL' || normalized === 'CANCELLED' || normalized === 'CANCELED' || normalized === 'DRAW') return OUTCOME.cancel
   if (Number.isFinite(homeScore) && Number.isFinite(awayScore)) {
     if (homeScore > awayScore) return OUTCOME.sideA
     if (awayScore > homeScore) return OUTCOME.sideB
@@ -382,37 +534,9 @@ async function loadGenericResult(room) {
   return match ? normalizeManualResult({ ...match, source: 'generic oracle endpoint' }) : undefined
 }
 
-async function loadFootballDataResult(room) {
-  if (!env.FOOTBALL_DATA_API_TOKEN) return undefined
-
-  const kickoff = Date.parse(room.kickoff)
-  if (!Number.isFinite(kickoff)) return undefined
-
-  const date = new Date(kickoff).toISOString().slice(0, 10)
-  const competition = env.ORACLE_FOOTBALL_DATA_COMPETITION || 'WC'
-  const payload = await footballDataRequest(`/competitions/${competition}/matches`, {
-    dateFrom: date,
-    dateTo: date,
-  })
-  const match = (payload.matches || []).find((entry) => {
-    const home = entry.homeTeam?.name || ''
-    const away = entry.awayTeam?.name || ''
-    return teamMatch(home, room.teamA) && teamMatch(away, room.teamB)
-  })
-  if (!match || !['FINISHED', 'AWARDED'].includes(match.status)) return undefined
-
-  const homeScore = Number(match.score?.fullTime?.home)
-  const awayScore = Number(match.score?.fullTime?.away)
-  const outcome = outcomeFromWinner(match.score?.winner, homeScore, awayScore)
-  const score = scoreText(homeScore, awayScore)
-  if (!outcome || !score) return undefined
-
-  return { outcome, score, clock: 'FT', source: 'football-data.org' }
-}
-
 async function footballDataRequest(pathname, params = {}) {
   if (!env.FOOTBALL_DATA_API_TOKEN) {
-    throw new Error('Set FOOTBALL_DATA_API_TOKEN in .env before probing football-data.org.')
+    throw new Error('Set FOOTBALL_DATA_API_TOKEN in .env before using football-data.org.')
   }
 
   const url = new URL(`https://api.football-data.org/v4${pathname}`)
@@ -439,18 +563,445 @@ async function footballDataRequest(pathname, params = {}) {
   return payload
 }
 
+async function footballDataMatches(competition, dateFrom, dateTo, status = '') {
+  const cacheKey = `${competition}:${dateFrom}:${dateTo}:${status}`
+  if (footballDataCache.has(cacheKey)) return footballDataCache.get(cacheKey)
+
+  const payload = await footballDataRequest(`/competitions/${competition}/matches`, {
+    dateFrom,
+    dateTo,
+    status,
+  })
+  const matches = payload.matches || []
+  footballDataCache.set(cacheKey, matches)
+  return matches
+}
+
+async function loadFootballDataMatch(room) {
+  const kickoff = Date.parse(room.kickoff)
+  if (!Number.isFinite(kickoff)) return undefined
+
+  const date = new Date(kickoff).toISOString().slice(0, 10)
+  const competition = env.ORACLE_FOOTBALL_DATA_COMPETITION || 'WC'
+  const matches = await footballDataMatches(competition, date, date)
+
+  return matches.find((entry) => {
+    const home = entry.homeTeam?.name || ''
+    const away = entry.awayTeam?.name || ''
+    return teamMatch(home, room.teamA) && teamMatch(away, room.teamB)
+  })
+}
+
+function resultFromFootballMatch(match) {
+  if (!match) return undefined
+
+  const status = String(match.status || '').toUpperCase()
+  if (CANCELLED_STATUSES.has(status)) {
+    return { outcome: OUTCOME.cancel, score: 'VOID', clock: status, source: 'football-data.org' }
+  }
+
+  if (!FINAL_STATUSES.has(status)) return undefined
+
+  const score = scoreFromFootballMatch(match)
+  const outcome = outcomeFromWinner(match.score?.winner, score?.home, score?.away)
+  if (!outcome || !score?.text) return undefined
+
+  return { outcome, score: score.text, clock: 'FT', source: 'football-data.org' }
+}
+
+function estimatedClock(room) {
+  const kickoff = Date.parse(room.kickoff)
+  if (!Number.isFinite(kickoff)) return room.clock || 'LIVE'
+
+  const elapsed = Math.max(0, Math.floor((Date.now() - kickoff) / 60_000))
+  if (elapsed <= 45) return `${Math.max(1, elapsed)}'`
+  if (elapsed <= 60) return 'HT'
+  return `${Math.min(matchMinutes, elapsed - 15)}'`
+}
+
+function clockFromFootballMatch(room, match) {
+  if (!match || room.settlement !== 'open') return undefined
+
+  const status = String(match.status || '').toUpperCase()
+  if (FINAL_STATUSES.has(status) || CANCELLED_STATUSES.has(status) || POSTPONED_STATUSES.has(status)) return undefined
+
+  const score = scoreFromFootballMatch(match)?.text || room.score || '0 - 0'
+
+  if (HALFTIME_STATUSES.has(status)) {
+    return {
+      phase: 'halftime',
+      clock: 'HT',
+      score,
+      feeBps: 34,
+      source: 'football-data.org',
+    }
+  }
+
+  if (LIVE_STATUSES.has(status)) {
+    return {
+      phase: 'live',
+      clock: estimatedClock(room),
+      score,
+      feeBps: 46,
+      source: 'football-data.org',
+    }
+  }
+
+  return undefined
+}
+
+async function loadFootballDataSnapshot(room) {
+  const match = await loadFootballDataMatch(room)
+  return {
+    providerStatus: match?.status,
+    providerMatch: match,
+    result: resultFromFootballMatch(match),
+    clock: clockFromFootballMatch(room, match),
+  }
+}
+
+async function loadProviderSnapshot(room) {
+  if (providerName === 'football-data') return loadFootballDataSnapshot(room)
+  if (providerName === 'generic') return { result: await loadGenericResult(room) }
+  return { result: await loadManualResult(room) }
+}
+
+function clockDiffers(room, desired) {
+  if (!desired) return false
+  if (room.phase !== desired.phase) return true
+  if (room.score !== desired.score) return true
+  if (room.clock === desired.clock) return false
+
+  const currentMinute = Number(String(room.clock).replace(/[^0-9]/g, ''))
+  const nextMinute = Number(String(desired.clock).replace(/[^0-9]/g, ''))
+  if (Number.isFinite(currentMinute) && Number.isFinite(nextMinute)) {
+    return Math.abs(nextMinute - currentMinute) >= phaseUpdateMinutes
+  }
+
+  return true
+}
+
+function buildAction({ kind, target, to, abi, functionName, args: actionArgs, method, permission, roomCreator }) {
+  return {
+    kind,
+    target,
+    to,
+    method,
+    functionName,
+    args: actionArgs,
+    calldata: encodeFunctionData({ abi, functionName, args: actionArgs }),
+    permission,
+    roomCreator,
+    submitted: false,
+    submitStatus: 'not-submitted',
+  }
+}
+
+function buildClockAction(room, desiredClock) {
+  if (!desiredClock) return undefined
+
+  const phase = PHASE_CODE[desiredClock.phase]
+  if (phase === undefined) return undefined
+
+  if (clockTarget === 'agent') {
+    if (!isAddress(oracleAgentAddress)) return undefined
+    return buildAction({
+      kind: 'clock',
+      target: 'MatchOracleAgent',
+      to: oracleAgentAddress,
+      abi: ORACLE_AGENT_ABI,
+      functionName: 'submitClock',
+      method: 'submitClock(bytes32,uint8,string,string,uint16)',
+      args: [room.roomId, phase, desiredClock.clock, desiredClock.score, desiredClock.feeBps],
+      permission: 'oracle operator via upgraded MatchOracleAgent',
+      roomCreator: room.creator,
+    })
+  }
+
+  return buildAction({
+    kind: 'clock',
+    target: 'KickoffMarkets',
+    to: marketsAddress,
+    abi: MARKET_ABI,
+    functionName: 'updatePhase',
+    method: 'updatePhase(bytes32,uint8,string,string,uint16)',
+    args: [room.roomId, phase, desiredClock.clock, desiredClock.score, desiredClock.feeBps],
+    permission: 'room creator, owner, clockOperator, or oracleAgent',
+    roomCreator: room.creator,
+  })
+}
+
+function buildSettlementAction(room, result) {
+  if (!isAddress(oracleAgentAddress)) return undefined
+
+  const functionName = room.settlement === 'disputed' ? 'resolveResult' : 'submitResult'
+  return buildAction({
+    kind: room.settlement === 'disputed' ? 'resolve-dispute' : 'settlement',
+    target: 'MatchOracleAgent',
+    to: oracleAgentAddress,
+    abi: ORACLE_AGENT_ABI,
+    functionName,
+    method: `${functionName}(bytes32,uint8,string,string)`,
+    args: [room.roomId, result.outcome, result.score, result.clock],
+    permission: 'oracle operator',
+    roomCreator: room.creator,
+  })
+}
+
+function buildFinalizeAction(room) {
+  return buildAction({
+    kind: 'finalize',
+    target: 'KickoffMarkets',
+    to: marketsAddress,
+    abi: MARKET_ABI,
+    functionName: 'finalizeSettlement',
+    method: 'finalizeSettlement(bytes32)',
+    args: [room.roomId],
+    permission: 'any wallet',
+    roomCreator: room.creator,
+  })
+}
+
+function buildCreateRoomAction(fixture) {
+  return buildAction({
+    kind: 'create-room',
+    target: 'KickoffMarkets',
+    to: marketsAddress,
+    abi: MARKET_ABI,
+    functionName: 'createRoom',
+    method: 'createRoom(string,string,string)',
+    args: [fixture.teamA, fixture.teamB, fixture.kickoff],
+    permission: 'any wallet',
+    roomCreator: '',
+  })
+}
+
+async function submitAction(action) {
+  if (!autoSubmit) return action
+
+  const runtime = getWalletRuntime()
+  if (!runtime) {
+    action.submitStatus = 'not-configured'
+    action.submitMessage = 'Set ORACLE_OPERATOR_PRIVATE_KEY to enable backend signing.'
+    return action
+  }
+
+  if (
+    action.kind === 'clock' &&
+    action.target === 'KickoffMarkets' &&
+    !clockAuthorityOverride &&
+    !sameAddress(runtime.account.address, action.roomCreator)
+  ) {
+    action.submitStatus = 'blocked'
+    action.submitMessage =
+      'Clock updates on KickoffMarkets require creator/owner/clockOperator permission. Set ORACLE_CLOCK_AUTHORIZED=true only after setClockOperator is configured.'
+    return action
+  }
+
+  try {
+    const hash = await runtime.walletClient.writeContract({
+      address: action.to,
+      abi: action.target === 'MatchOracleAgent' ? ORACLE_AGENT_ABI : MARKET_ABI,
+      functionName: action.functionName,
+      args: action.args,
+    })
+    const receipt = await runtime.publicClient.waitForTransactionReceipt({ hash })
+    action.submitted = true
+    action.submitStatus = receipt.status === 'success' ? 'confirmed' : 'reverted'
+    action.txHash = hash
+  } catch (error) {
+    action.submitStatus = 'failed'
+    action.submitMessage = error instanceof Error ? error.shortMessage || error.message : String(error)
+  }
+
+  return action
+}
+
+async function inspectRoom(room) {
+  const item = {
+    room,
+    status: 'oracle-pending',
+    actions: [],
+    message: '',
+  }
+
+  const dueAt = expectedResultTimestamp(room)
+  const now = Date.now()
+
+  if (room.settlement !== 'open' && room.settlement !== 'disputed') {
+    item.status = 'already-handled'
+    item.message = `Settlement state is ${room.settlement}.`
+    return item
+  }
+
+  const snapshot = await loadProviderSnapshot(room)
+  item.providerStatus = snapshot.providerStatus
+
+  if (clockAutomation && room.settlement === 'open' && snapshot.clock && clockDiffers(room, snapshot.clock)) {
+    const clockAction = buildClockAction(room, snapshot.clock)
+    if (clockAction) item.actions.push(clockAction)
+    item.status = 'clock-ready'
+    item.message = `Live clock update verified by ${snapshot.clock.source}.`
+  }
+
+  if (room.settlement === 'disputed') {
+    if (settlementAutomation && snapshot.result) {
+      const action = buildSettlementAction(room, snapshot.result)
+      if (action) item.actions.push(action)
+      item.result = snapshot.result
+      item.status = 'result-ready'
+      item.message = `Dispute can be resolved with ${snapshot.result.source}.`
+    } else {
+      item.status = 'creator-fallback-enabled'
+      item.message = 'Room is disputed and no verified result is available from the configured provider.'
+    }
+  } else if (room.settlement === 'open' && settlementAutomation) {
+    if (snapshot.result && (!dueAt || now >= dueAt || providerName === 'football-data')) {
+      const action = buildSettlementAction(room, snapshot.result)
+      if (action) item.actions.push(action)
+      item.result = snapshot.result
+      item.status = 'result-ready'
+      item.message = `Result verified by ${snapshot.result.source}.`
+    } else if (dueAt && now >= dueAt) {
+      item.status = 'creator-fallback-enabled'
+      item.dueAt = new Date(dueAt).toISOString()
+      item.message = 'No verified result available from the configured provider. Creator fallback remains available.'
+    } else {
+      item.status = item.actions.length ? item.status : 'oracle-pending'
+      item.dueAt = dueAt ? new Date(dueAt).toISOString() : undefined
+      if (!item.message) item.message = dueAt ? 'Waiting for expected full-time window.' : 'Kickoff time is not parseable.'
+    }
+  }
+
+  if (
+    finalizeAutomation &&
+    ['proposed-cancel', 'proposed-a', 'proposed-b'].includes(room.settlement) &&
+    room.disputeDeadline > 0 &&
+    now >= room.disputeDeadline * 1000
+  ) {
+    item.actions.push(buildFinalizeAction(room))
+    item.status = 'finalize-ready'
+    item.message = 'Optimistic dispute window has closed; room can be finalized.'
+  }
+
+  for (const action of item.actions) {
+    await submitAction(action)
+  }
+
+  return item
+}
+
+function summarize(items) {
+  const actions = items.flatMap((item) => item.actions || [])
+
+  return {
+    rooms: items.length,
+    actions: actions.length,
+    submitted: actions.filter((action) => action.submitted).length,
+    failed: actions.filter((action) => action.submitStatus === 'failed' || action.submitStatus === 'reverted').length,
+    resultReady: items.filter((item) => item.status === 'result-ready').length,
+    clockReady: items.filter((item) => item.status === 'clock-ready').length,
+    fallbackReady: items.filter((item) => item.status === 'creator-fallback-enabled').length,
+    pending: items.filter((item) => item.status === 'oracle-pending').length,
+    handled: items.filter((item) => item.status === 'already-handled').length,
+  }
+}
+
+function cleanAction(action) {
+  const { abi, ...rest } = action
+  return rest
+}
+
+function cleanItem(item) {
+  return {
+    ...item,
+    actions: (item.actions || []).map(cleanAction),
+  }
+}
+
+function printReport(items, heading = 'Kickoff Markets oracle worker') {
+  const cleanItems = items.map(cleanItem)
+
+  if (jsonMode) {
+    console.log(
+      JSON.stringify(
+        {
+          network: network.name,
+          provider: providerName,
+          dryRun,
+          autoSubmit,
+          watch: watchMode,
+          items: cleanItems,
+        },
+        null,
+        2,
+      ),
+    )
+    return
+  }
+
+  const summary = summarize(items)
+  console.log(heading)
+  console.log(`Network: ${network.name}`)
+  console.log(`Provider: ${providerName}${dryRun ? ' (dry run)' : ''}`)
+  console.log(`Mode: ${watchMode ? `watching every ${pollSeconds}s` : importMode ? 'fixture import' : 'one-shot check'}`)
+  console.log(`Autosubmit: ${autoSubmit ? 'enabled' : 'disabled'}`)
+  console.log(`Rooms/items inspected: ${items.length}`)
+  console.log(`Actions: ${summary.actions} (${summary.submitted} submitted, ${summary.failed} failed)`)
+  console.log('')
+
+  for (const item of items) {
+    const room = item.room
+    const title = room ? `${room.teamA} vs ${room.teamB}` : `${item.fixture.teamA} vs ${item.fixture.teamB}`
+    console.log(`[${item.status}] ${title}`)
+    if (room) {
+      console.log(`roomId: ${room.roomId}`)
+      console.log(`kickoff: ${room.kickoff}`)
+      console.log(`state: ${room.phase} / ${room.settlement}`)
+    } else {
+      console.log(`kickoff: ${item.fixture.kickoff}`)
+    }
+    if (item.providerStatus) console.log(`provider status: ${item.providerStatus}`)
+    console.log(item.message)
+
+    if (item.result) {
+      console.log(`result: outcome ${item.result.outcome}, score ${item.result.score}, clock ${item.result.clock}`)
+    }
+
+    for (const action of item.actions || []) {
+      console.log(`action: ${action.kind} via ${action.target}`)
+      console.log(`to: ${action.to}`)
+      console.log(`method: ${action.method}`)
+      console.log(`permission: ${action.permission}`)
+      console.log(`calldata: ${action.calldata}`)
+      if (action.txHash) console.log(`tx: ${action.txHash}`)
+      if (action.submitStatus !== 'not-submitted') console.log(`submit: ${action.submitStatus}`)
+      if (action.submitMessage) console.log(`submit message: ${action.submitMessage}`)
+    }
+
+    console.log('')
+  }
+}
+
+async function inspectAllRooms() {
+  const rooms = await readRooms()
+  const inspected = []
+
+  for (const room of rooms) {
+    inspected.push(await inspectRoom(room))
+  }
+
+  return inspected
+}
+
 function formatProbeMatch(match) {
   const home = match.homeTeam?.name || 'TBD'
   const away = match.awayTeam?.name || 'TBD'
   const utcDate = match.utcDate || 'TBD'
   const status = match.status || 'UNKNOWN'
-  const score = match.score?.fullTime
-  const scoreText =
-    Number.isFinite(Number(score?.home)) && Number.isFinite(Number(score?.away))
-      ? `${score.home} - ${score.away}`
-      : 'no score'
+  const score = scoreFromFootballMatch(match)?.text || 'no score'
 
-  return `${utcDate} | ${status} | ${home} vs ${away} | ${scoreText}`
+  return `${utcDate} | ${status} | ${home} vs ${away} | ${score}`
 }
 
 async function probeFootballData() {
@@ -515,152 +1066,74 @@ async function probeFootballData() {
   }
 }
 
-async function loadResult(room) {
-  if (providerName === 'football-data') return loadFootballDataResult(room)
-  if (providerName === 'generic') return loadGenericResult(room)
-  return loadManualResult(room)
-}
+async function importFixtures() {
+  if (providerName !== 'football-data') {
+    throw new Error('Fixture import requires ORACLE_PROVIDER=football-data.')
+  }
 
-async function buildAgentCall(room, result) {
-  if (!isAddress(oracleAgentAddress)) return undefined
+  if (!isAddress(marketsAddress)) {
+    throw new Error('Set VITE_KICKOFF_MARKETS_ADDRESS before importing fixtures.')
+  }
 
-  const signature = room.settlement === 'disputed' ? SIGNATURES.resolveResult : SIGNATURES.submitResult
-  const data = await encodeCall(signature, [
-    { kind: 'bytes32', value: room.roomId },
-    { kind: 'uint', value: result.outcome },
-    { kind: 'string', value: result.score },
-    { kind: 'string', value: result.clock },
+  const [rooms, matches] = await Promise.all([
+    readRooms(),
+    footballDataMatches(importCompetition, importDateFrom, importDateTo, importStatus),
   ])
 
-  return {
-    to: oracleAgentAddress,
-    method: signature,
-    calldata: data,
-  }
-}
+  const existing = new Set(rooms.map((room) => fixtureKey(room.teamA, room.teamB, room.kickoff)))
+  const fixtures = matches
+    .filter((match) => match.homeTeam?.name && match.awayTeam?.name && match.utcDate)
+    .map((match) => ({
+      teamA: match.homeTeam.name,
+      teamB: match.awayTeam.name,
+      kickoff: new Date(match.utcDate).toISOString(),
+      status: match.status,
+    }))
+    .filter((fixture) => !existing.has(fixtureKey(fixture.teamA, fixture.teamB, fixture.kickoff)))
+    .slice(0, importLimit)
 
-async function inspectRoom(room) {
-  if (room.settlement !== 'open' && room.settlement !== 'disputed') {
-    return {
-      room,
-      status: 'already-handled',
-      message: `Settlement state is ${room.settlement}.`,
-    }
-  }
-
-  const dueAt = expectedResultTimestamp(room)
-  if (!dueAt) {
-    return {
-      room,
-      status: 'operator-time-required',
-      message: 'Kickoff time is not parseable. Creator fallback remains available.',
-    }
-  }
-
-  if (Date.now() < dueAt && !dryRun) {
-    return {
-      room,
-      status: 'oracle-pending',
-      dueAt: new Date(dueAt).toISOString(),
-      message: 'Waiting for expected full-time window.',
-    }
-  }
-
-  const result = await loadResult(room)
-  if (!result) {
-    return {
-      room,
-      status: 'creator-fallback-enabled',
-      dueAt: new Date(dueAt).toISOString(),
-      message: 'No verified result available from the configured provider.',
-    }
-  }
-
-  const call = await buildAgentCall(room, result)
-  return {
-    room,
-    result,
-    call,
-    status: 'result-ready',
-    dueAt: new Date(dueAt).toISOString(),
-    message: `Verified by ${result.source}.`,
-  }
-}
-
-function summarize(items) {
-  return {
-    rooms: items.length,
-    resultReady: items.filter((item) => item.status === 'result-ready').length,
-    fallbackReady: items.filter((item) => item.status === 'creator-fallback-enabled').length,
-    pending: items.filter((item) => item.status === 'oracle-pending' || item.status === 'operator-time-required').length,
-    handled: items.filter((item) => item.status === 'already-handled').length,
-  }
-}
-
-function printReport(items) {
-  if (jsonMode) {
-    console.log(JSON.stringify({ network: network.name, provider: providerName, dryRun, watch: watchMode, items }, null, 2))
-    return
-  }
-
-  console.log(`Kickoff Markets oracle worker`)
-  console.log(`Network: ${network.name}`)
-  console.log(`Provider: ${providerName}${dryRun ? ' (dry run)' : ''}`)
-  console.log(`Mode: ${watchMode ? `watching every ${pollSeconds}s` : 'one-shot check'}`)
-  console.log(`Rooms inspected: ${items.length}`)
-  console.log('')
+  const items = fixtures.map((fixture) => ({
+    fixture,
+    status: 'fixture-ready',
+    message: 'Fixture is not on-chain yet.',
+    actions: [buildCreateRoomAction(fixture)],
+  }))
 
   for (const item of items) {
-    const room = item.room
-    console.log(`[${item.status}] ${room.teamA} vs ${room.teamB}`)
-    console.log(`roomId: ${room.roomId}`)
-    console.log(`kickoff: ${room.kickoff}`)
-    console.log(`state: ${room.phase} / ${room.settlement}`)
-    console.log(item.message)
-
-    if (item.result) {
-      console.log(`result: outcome ${item.result.outcome}, score ${item.result.score}, clock ${item.result.clock}`)
+    for (const action of item.actions) {
+      await submitAction(action)
     }
-
-    if (item.call) {
-      console.log(`agent: ${item.call.to}`)
-      console.log(`method: ${item.call.method}`)
-      console.log(`calldata: ${item.call.calldata}`)
-    } else if (item.status === 'result-ready') {
-      console.log('agent: configure VITE_MATCH_ORACLE_AGENT_ADDRESS to generate calldata.')
+    if (item.actions.some((action) => action.submitted)) {
+      item.status = 'fixture-created'
+      item.message = 'Fixture creation transaction submitted.'
     }
-
-    console.log('')
-  }
-}
-
-async function inspectAllRooms() {
-  if (!isAddress(marketsAddress)) {
-    throw new Error('Set VITE_KICKOFF_MARKETS_ADDRESS in .env before running the oracle worker.')
   }
 
-  const count = await readRoomCount()
-  const roomIds = await Promise.all(Array.from({ length: count }, (_, index) => readRoomIdAt(index)))
-  const rooms = await Promise.all(roomIds.map((roomId) => readRoom(roomId)))
-  const inspected = []
-
-  for (const room of rooms) {
-    inspected.push(await inspectRoom(room))
+  if (items.length === 0) {
+    return [
+      {
+        fixture: { teamA: importCompetition, teamB: 'fixtures', kickoff: `${importDateFrom} to ${importDateTo}` },
+        status: 'nothing-to-import',
+        message: 'All provider fixtures in the selected date range already exist on-chain, or no fixtures were returned.',
+        actions: [],
+      },
+    ]
   }
 
-  return inspected
+  return items
 }
 
 function startHealthServer() {
   if (!healthPort) return undefined
 
-  const server = http.createServer((request, response) => {
+  const server = nodeHttp.createServer((request, response) => {
     const statusCode = lastState.status === 'error' ? 503 : 200
     const payload = {
       service: 'kickoff-markets-oracle-worker',
       network: network.name,
       provider: providerName,
       dryRun,
+      autoSubmit,
       watch: watchMode,
       ...lastState,
     }
@@ -695,7 +1168,7 @@ async function runOnce() {
     error: undefined,
   }
 
-  const items = await inspectAllRooms()
+  const items = importMode ? await importFixtures() : await inspectAllRooms()
   const summary = summarize(items)
   lastState = {
     ...lastState,
@@ -707,7 +1180,7 @@ async function runOnce() {
     error: undefined,
   }
 
-  printReport(items)
+  printReport(items, importMode ? 'Kickoff Markets fixture importer' : 'Kickoff Markets oracle worker')
   return items
 }
 
@@ -738,6 +1211,7 @@ async function main() {
   if (!jsonMode) {
     console.log(`Kickoff Markets oracle watcher started on ${network.name}`)
     console.log(`Provider: ${providerName}${dryRun ? ' (dry run)' : ''}`)
+    console.log(`Autosubmit: ${autoSubmit ? 'enabled' : 'disabled'}`)
     console.log(`Polling every ${pollSeconds}s`)
     console.log('')
   }

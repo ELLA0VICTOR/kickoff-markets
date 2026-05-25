@@ -58,6 +58,7 @@ contract KickoffMarkets {
     address public immutable collateralToken;
     address public owner;
     address public oracleAgent;
+    address public clockOperator;
     address public matchClockHook;
     uint16 public constant MAX_HOOK_FEE_BPS = 1_000;
     uint256 public disputePeriod = 3 minutes;
@@ -74,6 +75,7 @@ contract KickoffMarkets {
     event DisputePeriodUpdated(uint256 disputePeriod);
     event HookLinked(address indexed hook);
     event LiquidityAdded(bytes32 indexed roomId, address indexed provider, uint256 amount, uint256 lpShares);
+    event ClockOperatorUpdated(address indexed clockOperator);
     event OracleAgentUpdated(address indexed oracleAgent);
     event PhaseUpdated(bytes32 indexed roomId, Phase phase, string clock, string score, uint16 hookFeeBps);
     event RoomCreated(bytes32 indexed roomId, string teamA, string teamB, string kickoff, address indexed creator);
@@ -107,6 +109,14 @@ contract KickoffMarkets {
         _;
     }
 
+    modifier onlyClockUpdater(bytes32 roomId) {
+        require(
+            msg.sender == rooms[roomId].creator || msg.sender == clockOperator || msg.sender == oracleAgent || msg.sender == owner,
+            "NOT_CLOCK_UPDATER"
+        );
+        _;
+    }
+
     modifier onlyResolver(bytes32 roomId) {
         require(
             msg.sender == rooms[roomId].creator || msg.sender == oracleAgent || msg.sender == owner,
@@ -119,11 +129,19 @@ contract KickoffMarkets {
         require(collateralToken_ != address(0), "ZERO_COLLATERAL");
         collateralToken = collateralToken_;
         owner = msg.sender;
+        clockOperator = msg.sender;
+        emit ClockOperatorUpdated(msg.sender);
     }
 
     function setOracleAgent(address nextOracleAgent) external onlyOwner {
         oracleAgent = nextOracleAgent;
         emit OracleAgentUpdated(nextOracleAgent);
+    }
+
+    function setClockOperator(address nextClockOperator) external onlyOwner {
+        require(nextClockOperator != address(0), "ZERO_CLOCK_OPERATOR");
+        clockOperator = nextClockOperator;
+        emit ClockOperatorUpdated(nextClockOperator);
     }
 
     function setMatchClockHook(address nextHook) external onlyOwner {
@@ -223,7 +241,7 @@ contract KickoffMarkets {
         string calldata clock,
         string calldata score,
         uint16 suggestedFeeBps
-    ) external onlyRoomCreator(roomId) {
+    ) external onlyClockUpdater(roomId) {
         Room storage room = rooms[roomId];
         require(room.exists, "ROOM_NOT_FOUND");
         require(room.settlement == Settlement.Open, "ROOM_NOT_OPEN");

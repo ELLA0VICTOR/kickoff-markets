@@ -13,7 +13,7 @@ Most prediction markets treat a match as a static yes/no question. Kickoff Marke
 - Before kickoff, liquidity can enter while fees are low.
 - During live play, the Match Clock Hook raises fees during volatile moments.
 - At halftime, fee state stabilizes.
-- After full-time, an oracle worker checks for the result, with creator fallback if data is unavailable.
+- After full-time, an oracle worker checks for the result, proposes settlement, and falls back to the creator path only when verified data is unavailable.
 
 The result is a product that turns World Cup attention into visible X Layer activity: room creation, collateral approvals, trades, liquidity deposits, clock updates, settlement, and claims.
 
@@ -41,7 +41,8 @@ flowchart TD
     M --> P
     P --> Q[Escrow, Position, Fee, and Claim State]
     Q --> R[Oracle Worker Watches Result Window]
-    R --> T{Verified Result?}
+    R --> S[Sports API / Result Provider]
+    S --> T{Verified Result?}
     T -- Yes --> U[MatchOracleAgent Proposes Result]
     T -- No --> V[Creator Fallback Proposes Result]
     U --> W[Optimistic Dispute Window]
@@ -61,7 +62,7 @@ flowchart TD
 4. User claims test collateral on testnet, or uses a configured real ERC20 collateral on mainnet.
 5. User approves the market contract.
 6. User trades a team outcome or adds liquidity.
-7. Room creator updates the Match Clock fee state as the match changes.
+7. Oracle worker or room creator updates Match Clock state as the match changes.
 8. Oracle worker checks the post-match result window.
 9. Oracle agent proposes the result when data is available.
 10. If data is unavailable, creator fallback proposes the result.
@@ -82,9 +83,11 @@ kickoff-markets/
 |   |-- favicon.svg
 |   `-- icons.svg
 |-- scripts/
-|   |-- oracle-worker.mjs           # Time-based oracle/result checker
+|   |-- deploy-xlayer.mjs           # Terminal deployer for X Layer contracts and env updates
+|   |-- oracle-worker.mjs           # Fixture importer, clock watcher, oracle settlement worker
 |   `-- oracle-results.example.json # Manual provider rehearsal fixture
 |-- src/
+|   |-- assets/                     # Local brand and visual assets
 |   |-- components/
 |   |   `-- product/
 |   |      |-- AppTopbar.tsx         # Search, wallet, network, help controls
@@ -104,6 +107,7 @@ kickoff-markets/
 |   |-- lib/
 |   |   |-- contractClient.ts        # ABI encoding, chain reads, tx helpers
 |   |   |-- format.ts                # Number and currency formatting
+|   |   |-- matchTime.ts             # Kickoff countdown and UTC match-time helpers
 |   |   |-- oracleStatus.ts          # Oracle/fallback status derivation
 |   |   `-- wallet.ts                # Wallet connect and network switch helpers
 |   |-- types/
@@ -113,6 +117,7 @@ kickoff-markets/
 |   `-- main.tsx
 |-- .env.example
 |-- .gitignore
+|-- package-lock.json
 |-- package.json
 |-- vite.config.ts
 `-- README.md
@@ -125,6 +130,7 @@ kickoff-markets/
 - Vite
 - Tailwind CSS v4
 - Lucide React icons
+- Viem
 - Solidity
 - X Layer
 
@@ -157,7 +163,20 @@ ORACLE_MATCH_MINUTES=90
 ORACLE_RESULT_GRACE_MINUTES=30
 ORACLE_POLL_SECONDS=60
 ORACLE_HEALTH_PORT=
+ORACLE_AUTOSUBMIT=false
+ORACLE_OPERATOR_PRIVATE_KEY=
+ORACLE_CLOCK_AUTOMATION=true
+ORACLE_SETTLEMENT_AUTOMATION=true
+ORACLE_FINALIZE_AUTOMATION=true
+ORACLE_CLOCK_TARGET=markets
+ORACLE_CLOCK_AUTHORIZED=false
+ORACLE_PHASE_UPDATE_MINUTES=5
 ORACLE_FOOTBALL_DATA_COMPETITION=WC
+ORACLE_IMPORT_COMPETITION=WC
+ORACLE_IMPORT_DATE_FROM=2026-06-11
+ORACLE_IMPORT_DATE_TO=2026-06-18
+ORACLE_IMPORT_STATUS=
+ORACLE_IMPORT_LIMIT=32
 ORACLE_PROBE_COMPETITION=WC
 ORACLE_PROBE_DATE_FROM=2026-06-11
 ORACLE_PROBE_DATE_TO=2026-06-18
@@ -181,6 +200,13 @@ Build:
 npm run build
 ```
 
+Terminal deploy:
+
+```bash
+npm run deploy:xlayer -- --dry-run
+npm run deploy:xlayer -- --write-env
+```
+
 Lint:
 
 ```bash
@@ -192,6 +218,7 @@ Oracle check:
 ```bash
 npm run oracle:check
 npm run oracle:dry
+npm run oracle:import
 npm run oracle:probe
 npm run oracle:watch
 ```
@@ -215,7 +242,35 @@ npm run oracle:watch
 
 ### 2. Deploy Contracts
 
-Recommended hackathon deployment path: Remix + OKX Wallet.
+Recommended hackathon deployment path: terminal deployer or Remix + OKX Wallet.
+
+Terminal deployer, recommended when Remix or wallet injection is unstable:
+
+1. Export the private key for a fresh deployer wallet from OKX Wallet.
+2. Put it in `.env` as `X_LAYER_DEPLOYER_PRIVATE_KEY`. Do not share it and do not use a wallet holding meaningful funds.
+3. Keep `VITE_COLLATERAL_TOKEN_ADDRESS` set if reusing an existing `KickoffTestUSDC`; otherwise pass `--deploy-token`.
+4. Set `X_LAYER_OPERATOR_ADDRESS` to the wallet that should operate the oracle worker. If omitted, the deployer wallet is used.
+5. Run a compile-only rehearsal:
+
+```bash
+npm run deploy:xlayer -- --dry-run
+```
+
+6. Deploy and write the new public contract addresses into `.env`:
+
+```bash
+npm run deploy:xlayer -- --write-env
+```
+
+To deploy a new test collateral token too:
+
+```bash
+npm run deploy:xlayer -- --deploy-token --write-env
+```
+
+The script deploys `KickoffMarkets`, `MatchClockHook`, and `MatchOracleAgent`, then calls `setMatchClockHook`, `setOracleAgent`, and `setClockOperator`.
+
+Remix path:
 
 1. Open Remix.
 2. Upload `contracts/KickoffTestUSDC.sol` and `contracts/KickoffMarkets.sol`.
@@ -233,6 +288,7 @@ Recommended hackathon deployment path: Remix + OKX Wallet.
 14. Call `setMatchClockHook(hookAddress)` on `KickoffMarkets`.
 15. Recommended: deploy `MatchOracleAgent` with `KickoffMarkets` and your oracle operator wallet.
 16. Call `setOracleAgent(agentAddress)` on `KickoffMarkets`.
+17. For automated live score/clock updates, call `setClockOperator(operatorWallet)` on `KickoffMarkets`, or set `ORACLE_CLOCK_TARGET=agent` and use the upgraded `MatchOracleAgent.submitClock` path.
 
 ### 3. Configure Frontend
 
@@ -259,9 +315,9 @@ npm run dev
 2. Click `Faucet collateral` to mint test ERC20 collateral.
 3. Create a match room.
 4. Add liquidity or place a trade.
-5. Use creator controls in the `Hook` tab to update the Match Clock state.
+5. Use creator controls in the `Hook` tab, or run the oracle worker, to update the Match Clock state.
 6. Run `npm run oracle:dry` after the expected full-time window.
-7. If a result is available, call `MatchOracleAgent.submitResult` with the worker output.
+7. If a result is available, the worker prints or submits `MatchOracleAgent.submitResult`.
 8. If no result is available, use the creator fallback controls in the `Hook` tab.
 9. Finalize after the dispute window, then claim payout.
 10. Open the transaction link to verify the action on the X Layer explorer.
@@ -298,6 +354,22 @@ ORACLE_FOOTBALL_DATA_COMPETITION=WC
 X_LAYER_RPC_URL=https://testrpc.xlayer.tech/terigon
 ```
 
+For production-style automation, use a backend-only operator wallet with limited gas funds:
+
+```txt
+ORACLE_PROVIDER=football-data
+FOOTBALL_DATA_API_TOKEN=yourProviderToken
+ORACLE_AUTOSUBMIT=true
+ORACLE_OPERATOR_PRIVATE_KEY=backendOnlyPrivateKey
+ORACLE_CLOCK_AUTOMATION=true
+ORACLE_SETTLEMENT_AUTOMATION=true
+ORACLE_FINALIZE_AUTOMATION=true
+ORACLE_CLOCK_TARGET=markets
+ORACLE_CLOCK_AUTHORIZED=true
+```
+
+Only set `ORACLE_CLOCK_AUTHORIZED=true` after the operator wallet has been authorized on-chain with `setClockOperator(operatorWallet)`. Never use a browser wallet seed phrase as the backend key.
+
 Health endpoint:
 
 ```txt
@@ -313,12 +385,22 @@ npm run oracle:probe -- --competition=WC --date-from=2026-06-11 --date-to=2026-0
 npm run oracle:probe -- --competition=WC --date-from=2022-12-18 --date-to=2022-12-18 --status=FINISHED
 ```
 
+Import real World Cup fixtures from the configured provider:
+
+```bash
+npm run oracle:import
+npm run oracle:import -- --date-from=2026-06-11 --date-to=2026-06-18 --limit=8
+```
+
+By default the importer prints the creation calls. With `ORACLE_AUTOSUBMIT=true`, it submits the missing fixtures on-chain from the backend operator wallet.
+
 ## Contract Surface
 
 The frontend calls:
 
 ```solidity
 createRoom(string teamA, string teamB, string kickoff)
+setClockOperator(address nextClockOperator)
 placeTrade(bytes32 roomId, uint8 side, uint256 collateralAmount)
 addLiquidity(bytes32 roomId, uint8 side, uint256 collateralAmount)
 updatePhase(bytes32 roomId, Phase phase, string clock, string score, uint16 hookFeeBps)
@@ -366,7 +448,7 @@ The room enters a dispute window. A positioned user can dispute before the deadl
 - Halftime: stabilized fee.
 - Settlement: lower fee while claims close the room.
 
-When `KickoffMarkets.setMatchClockHook(hookAddress)` is configured, `KickoffMarkets.updatePhase` calls the hook and uses the fee returned by the hook. Without a linked hook, the market falls back to the fee suggested by the UI.
+When `KickoffMarkets.setMatchClockHook(hookAddress)` is configured, `KickoffMarkets.updatePhase` calls the hook and uses the fee returned by the hook. Without a linked hook, the market falls back to the fee suggested by the UI or oracle worker.
 
 ## Oracle Path
 
@@ -374,11 +456,11 @@ Chainlink settlement is not a hard dependency on X Layer testnet. Kickoff Market
 
 1. `scripts/oracle-worker.mjs` runs as a long-lived backend process with `npm run oracle:watch`.
 2. The worker reads rooms from `KickoffMarkets` on every poll.
-3. It waits until each room reaches the expected full-time result window.
-4. It checks the configured provider: `manual`, `football-data`, or `generic`.
-5. If a result is available, it prints the exact `MatchOracleAgent.submitResult` call and calldata.
-6. The oracle operator signs that transaction.
-7. The agent proposes settlement on `KickoffMarkets`.
+3. It checks the configured provider: `manual`, `football-data`, or `generic`.
+4. During live matches, it prepares or submits Match Clock updates.
+5. After full-time, it prepares or submits `MatchOracleAgent.submitResult`.
+6. If a proposal is undisputed after the dispute window, it prepares or submits finalization.
+7. If verified data is unavailable, the creator fallback remains available through the UI.
 8. Users still receive the optimistic dispute window before finalization.
 
 If the provider cannot return a verified result, the UI displays creator fallback and the room creator can propose the result through the same optimistic settlement path. This keeps the product deployable on X Layer testnet without pretending an unsupported Chainlink feed exists.

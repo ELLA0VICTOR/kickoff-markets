@@ -8,7 +8,9 @@ contract MatchOracleAgent {
 
     bytes4 private constant PROPOSE_SELECTOR = bytes4(keccak256("proposeSettlement(bytes32,uint8,string,string)"));
     bytes4 private constant RESOLVE_SELECTOR = bytes4(keccak256("resolveDispute(bytes32,uint8,string,string)"));
+    bytes4 private constant UPDATE_PHASE_SELECTOR = bytes4(keccak256("updatePhase(bytes32,uint8,string,string,uint16)"));
 
+    event ClockSubmitted(bytes32 indexed roomId, uint8 phase, string clock, string score, uint16 feeBps);
     event OperatorUpdated(address indexed operator);
     event ResultSubmitted(bytes32 indexed roomId, uint8 outcome, string score, string clock);
 
@@ -61,6 +63,20 @@ contract MatchOracleAgent {
         );
         require(success, _revertReason(data));
         emit ResultSubmitted(roomId, outcome, score, clock);
+    }
+
+    function submitClock(
+        bytes32 roomId,
+        uint8 phase,
+        string calldata clock,
+        string calldata score,
+        uint16 suggestedFeeBps
+    ) external onlyOperator {
+        (bool success, bytes memory data) = kickoffMarkets.call(
+            abi.encodeWithSelector(UPDATE_PHASE_SELECTOR, roomId, phase, clock, score, suggestedFeeBps)
+        );
+        require(success, _revertReason(data));
+        emit ClockSubmitted(roomId, phase, clock, score, suggestedFeeBps);
     }
 
     function _revertReason(bytes memory data) private pure returns (string memory) {

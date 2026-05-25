@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "deploy:xlayer": "node scripts/deploy-xlayer.mjs",
     "lint": "eslint .",
     "oracle:check": "node scripts/oracle-worker.mjs",
     "oracle:dry": "node scripts/oracle-worker.mjs --dry-run",
+    "oracle:import": "node scripts/oracle-worker.mjs --import-fixtures",
     "oracle:probe": "node scripts/oracle-worker.mjs --probe-football-data",
     "oracle:watch": "node scripts/oracle-worker.mjs --watch",
     "preview": "vite preview"
@@ -18,7 +20,8 @@
     "lucide-react": "^1.16.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "tailwindcss": "^4.3.0"
+    "tailwindcss": "^4.3.0",
+    "viem": "^2.51.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -30,6 +33,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
+    "solc": "^0.8.24",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12"
