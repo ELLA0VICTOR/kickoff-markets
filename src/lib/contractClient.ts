@@ -1,7 +1,7 @@
 import {
   COLLATERAL_TOKEN_ADDRESS,
   KICKOFF_MARKETS_ADDRESS,
-  X_LAYER_NETWORK,
+  X_LAYER_RPC_URLS,
   isCollateralTokenConfigured,
   isKickoffContractConfigured,
 } from '../config/contracts'
@@ -137,6 +137,8 @@ const EVENT_TOPICS: Record<string, string> = {
 
 const TOKEN_DECIMALS = 6n
 const TOKEN_SCALE = 10n ** TOKEN_DECIMALS
+const LOG_BLOCK_CHUNK = 100n
+const LOG_LOOKBACK_BLOCKS = 1_000n
 type AbiValue =
   | {
       kind: 'address' | 'bytes32' | 'string'
@@ -358,9 +360,9 @@ export function parseTokenAmount(value: string) {
 }
 
 async function rpcRequest<T>(method: string, params: unknown[] = []): Promise<T> {
-  let lastError: unknown
+  const errors: string[] = []
 
-  for (const rpcUrl of X_LAYER_NETWORK.rpcUrls) {
+  for (const rpcUrl of X_LAYER_RPC_URLS) {
     try {
       const response = await fetch(rpcUrl, {
         method: 'POST',
@@ -380,11 +382,11 @@ async function rpcRequest<T>(method: string, params: unknown[] = []): Promise<T>
 
       return payload.result as T
     } catch (error) {
-      lastError = error
+      errors.push(`${rpcUrl}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error(`${method} failed`)
+  throw new Error(`${method} failed across ${X_LAYER_RPC_URLS.length} RPC endpoint(s): ${errors.join(' | ')}`)
 }
 
 async function selector(signature: string) {
@@ -407,10 +409,15 @@ async function callContract(to: string, data: string) {
   return rpcRequest<string>('eth_call', [{ to, data }, 'latest'])
 }
 
+async function readLatestBlockNumber() {
+  const blockNumber = await rpcRequest<string>('eth_blockNumber')
+  return BigInt(blockNumber)
+}
+
 async function sendTransaction(provider: EthereumProvider, from: string, to: string, data: string) {
   return provider.request<string>({
     method: 'eth_sendTransaction',
-    params: [{ from, to, data } satisfies TransactionRequest],
+    params: [{ from, to, data, value: '0x0' } satisfies TransactionRequest],
   })
 }
 
@@ -622,13 +629,21 @@ async function loadActivityLogs(roomLabels: Map<string, string>) {
     settlementProposed: await eventTopic(EVENT_SIGNATURES.settlementProposed),
     trade: await eventTopic(EVENT_SIGNATURES.trade),
   }
-  const logs = await rpcRequest<RpcLog[]>('eth_getLogs', [
-    {
-      address: KICKOFF_MARKETS_ADDRESS,
-      fromBlock: '0x0',
-      toBlock: 'latest',
-    },
-  ])
+  const latestBlock = await readLatestBlockNumber()
+  const logs: RpcLog[] = []
+  const fromStart = latestBlock > LOG_LOOKBACK_BLOCKS ? latestBlock - LOG_LOOKBACK_BLOCKS : 0n
+
+  for (let fromBlock = fromStart; fromBlock <= latestBlock; fromBlock += LOG_BLOCK_CHUNK) {
+    const toBlock = fromBlock + LOG_BLOCK_CHUNK - 1n > latestBlock ? latestBlock : fromBlock + LOG_BLOCK_CHUNK - 1n
+    const chunkLogs = await rpcRequest<RpcLog[]>('eth_getLogs', [
+      {
+        address: KICKOFF_MARKETS_ADDRESS,
+        fromBlock: toHexQuantity(fromBlock),
+        toBlock: toHexQuantity(toBlock),
+      },
+    ])
+    logs.push(...chunkLogs)
+  }
 
   const activityRows: ActivityRow[] = []
   const txCountByRoom = new Map<string, number>()
@@ -791,7 +806,21 @@ export async function loadOnchainState(walletAddress?: string): Promise<OnchainS
   const roomIds = await Promise.all(Array.from({ length: count }, (_, index) => readRoomIdAt(index)))
   const rooms = await Promise.all(roomIds.map((roomId) => readRoom(roomId)))
   const roomLabels = new Map(rooms.map((room) => [room.roomId, `${cleanTeamCode(room.teamA)}/${cleanTeamCode(room.teamB)}`]))
-  const { activityRows, tradersByRoom, txCountByRoom } = await loadActivityLogs(roomLabels)
+  let activityRows: ActivityRow[] = []
+  let tradersByRoom = new Map<string, Set<string>>()
+  let txCountByRoom = new Map<string, number>()
+
+  try {
+    const activity = await loadActivityLogs(roomLabels)
+    activityRows = activity.activityRows
+    tradersByRoom = activity.tradersByRoom
+    txCountByRoom = activity.txCountByRoom
+  } catch {
+    activityRows = []
+    tradersByRoom = new Map()
+    txCountByRoom = new Map()
+  }
+
   const positions = await Promise.all(rooms.map((room) => readPosition(room.roomId, walletAddress)))
   const markets = rooms.map((room, index) =>
     roomToMarket(room, txCountByRoom.get(room.roomId) ?? 0, tradersByRoom.get(room.roomId)?.size ?? 0, positions[index]),

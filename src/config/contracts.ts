@@ -2,6 +2,7 @@ const configuredKickoffAddress = import.meta.env.VITE_KICKOFF_MARKETS_ADDRESS?.t
 const configuredCollateralAddress = import.meta.env.VITE_COLLATERAL_TOKEN_ADDRESS?.trim() ?? ''
 const configuredMatchClockHookAddress = import.meta.env.VITE_MATCH_CLOCK_HOOK_ADDRESS?.trim() ?? ''
 const configuredMatchOracleAgentAddress = import.meta.env.VITE_MATCH_ORACLE_AGENT_ADDRESS?.trim() ?? ''
+const configuredRpcUrl = import.meta.env.VITE_X_LAYER_RPC_URL?.trim() ?? ''
 
 export type XLayerNetworkId = 'mainnet' | 'testnet'
 
@@ -43,6 +44,7 @@ function resolveConfiguredNetwork(): XLayerNetworkId {
 }
 
 export const X_LAYER_NETWORK = X_LAYER_NETWORKS[resolveConfiguredNetwork()]
+export const X_LAYER_RPC_URLS = configuredRpcUrl ? [configuredRpcUrl] : X_LAYER_NETWORK.rpcUrls
 
 export const KICKOFF_MARKETS_ADDRESS = configuredKickoffAddress
 export const COLLATERAL_TOKEN_ADDRESS = configuredCollateralAddress

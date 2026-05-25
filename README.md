@@ -157,6 +157,11 @@ ORACLE_MATCH_MINUTES=90
 ORACLE_RESULT_GRACE_MINUTES=30
 ORACLE_POLL_SECONDS=60
 ORACLE_HEALTH_PORT=
+ORACLE_FOOTBALL_DATA_COMPETITION=WC
+ORACLE_PROBE_COMPETITION=WC
+ORACLE_PROBE_DATE_FROM=2026-06-11
+ORACLE_PROBE_DATE_TO=2026-06-18
+ORACLE_PROBE_STATUS=
 X_LAYER_RPC_URL=
 FOOTBALL_DATA_API_TOKEN=
 ORACLE_RESULT_ENDPOINT=
@@ -187,6 +192,7 @@ Oracle check:
 ```bash
 npm run oracle:check
 npm run oracle:dry
+npm run oracle:probe
 npm run oracle:watch
 ```
 
@@ -288,6 +294,7 @@ ORACLE_PROVIDER=manual
 ORACLE_RESULTS_FILE=scripts/oracle-results.json
 ORACLE_POLL_SECONDS=60
 ORACLE_HEALTH_PORT=3001
+ORACLE_FOOTBALL_DATA_COMPETITION=WC
 X_LAYER_RPC_URL=https://testrpc.xlayer.tech/terigon
 ```
 
@@ -296,6 +303,14 @@ Health endpoint:
 ```txt
 /health
 /ready
+```
+
+Probe the sports API before trusting it for settlement:
+
+```bash
+npm run oracle:probe
+npm run oracle:probe -- --competition=WC --date-from=2026-06-11 --date-to=2026-06-18
+npm run oracle:probe -- --competition=WC --date-from=2022-12-18 --date-to=2022-12-18 --status=FINISHED
 ```
 
 ## Contract Surface

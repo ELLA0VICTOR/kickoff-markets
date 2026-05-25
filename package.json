@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "oracle:check": "node scripts/oracle-worker.mjs",
     "oracle:dry": "node scripts/oracle-worker.mjs --dry-run",
+    "oracle:probe": "node scripts/oracle-worker.mjs --probe-football-data",
     "oracle:watch": "node scripts/oracle-worker.mjs --watch",
     "preview": "vite preview"
   },

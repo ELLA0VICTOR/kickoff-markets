@@ -1,7 +1,9 @@
 import type { MatchMarket } from '../../data/markets'
+import type { ActionStatus } from '../../types/integration'
 import { MarketCard } from './MarketCard'
 
 type MarketBoardProps = {
+  actionStatus: ActionStatus
   collateralBalance?: number
   contractReady: boolean
   loading: boolean
@@ -11,9 +13,11 @@ type MarketBoardProps = {
   onMarketSelect: (id: string) => void
   onCreateClick: () => void
   onFaucetClick: () => void
+  onSeedFixtures: () => void
 }
 
 export function MarketBoard({
+  actionStatus,
   collateralBalance,
   contractReady,
   loading,
@@ -23,6 +27,7 @@ export function MarketBoard({
   onMarketSelect,
   onCreateClick,
   onFaucetClick,
+  onSeedFixtures,
 }: MarketBoardProps) {
   return (
     <main className="market-board">
@@ -38,11 +43,23 @@ export function MarketBoard({
               Faucet collateral
             </button>
           ) : null}
+          {contractReady ? (
+            <button className="feed-chip feed-button" type="button" onClick={onSeedFixtures}>
+              Seed WC fixtures
+            </button>
+          ) : null}
           <button className="create-button" type="button" onClick={onCreateClick}>
             Create room
           </button>
         </div>
       </div>
+
+      {actionStatus.state !== 'idle' ? (
+        <div className={`action-notice board-notice state-${actionStatus.state}`}>
+          <span>{actionStatus.state}</span>
+          <strong>{actionStatus.message}</strong>
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="empty-state">

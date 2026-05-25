@@ -62,6 +62,7 @@ const OUTCOME = {
 const args = new Set(process.argv.slice(2))
 const jsonMode = args.has('--json')
 const dryRun = args.has('--dry-run') || args.has('--dry')
+const probeMode = args.has('--probe-football-data') || args.has('--probe')
 const watchMode = args.has('--watch')
 const root = process.cwd()
 const env = loadEnv(root)
@@ -76,6 +77,10 @@ const matchMinutes = Number(env.ORACLE_MATCH_MINUTES || 90)
 const pollSeconds = Math.max(10, Number(readArg('--poll-seconds') || env.ORACLE_POLL_SECONDS || 60))
 const healthPort = Number(readArg('--health-port') || env.ORACLE_HEALTH_PORT || 0)
 const maxRuns = Number(readArg('--max-runs') || env.ORACLE_MAX_RUNS || 0)
+const probeCompetition = readArg('--competition') || env.ORACLE_PROBE_COMPETITION || 'WC'
+const probeDateFrom = readArg('--date-from') || env.ORACLE_PROBE_DATE_FROM || '2026-06-11'
+const probeDateTo = readArg('--date-to') || env.ORACLE_PROBE_DATE_TO || '2026-06-18'
+const probeStatus = readArg('--status') || env.ORACLE_PROBE_STATUS || ''
 const startedAt = new Date().toISOString()
 let stopping = false
 let lastState = {
@@ -384,16 +389,11 @@ async function loadFootballDataResult(room) {
   if (!Number.isFinite(kickoff)) return undefined
 
   const date = new Date(kickoff).toISOString().slice(0, 10)
-  const url = new URL('https://api.football-data.org/v4/matches')
-  url.searchParams.set('dateFrom', date)
-  url.searchParams.set('dateTo', date)
-
-  const response = await fetch(url, {
-    headers: { 'X-Auth-Token': env.FOOTBALL_DATA_API_TOKEN },
+  const competition = env.ORACLE_FOOTBALL_DATA_COMPETITION || 'WC'
+  const payload = await footballDataRequest(`/competitions/${competition}/matches`, {
+    dateFrom: date,
+    dateTo: date,
   })
-  if (!response.ok) throw new Error(`football-data.org returned ${response.status}`)
-
-  const payload = await response.json()
   const match = (payload.matches || []).find((entry) => {
     const home = entry.homeTeam?.name || ''
     const away = entry.awayTeam?.name || ''
@@ -408,6 +408,111 @@ async function loadFootballDataResult(room) {
   if (!outcome || !score) return undefined
 
   return { outcome, score, clock: 'FT', source: 'football-data.org' }
+}
+
+async function footballDataRequest(pathname, params = {}) {
+  if (!env.FOOTBALL_DATA_API_TOKEN) {
+    throw new Error('Set FOOTBALL_DATA_API_TOKEN in .env before probing football-data.org.')
+  }
+
+  const url = new URL(`https://api.football-data.org/v4${pathname}`)
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') url.searchParams.set(key, value)
+  }
+
+  const response = await fetch(url, {
+    headers: { 'X-Auth-Token': env.FOOTBALL_DATA_API_TOKEN },
+  })
+  const text = await response.text()
+  let payload
+
+  try {
+    payload = text ? JSON.parse(text) : {}
+  } catch {
+    payload = { raw: text }
+  }
+
+  if (!response.ok) {
+    throw new Error(`football-data.org ${response.status}: ${payload.message || text || response.statusText}`)
+  }
+
+  return payload
+}
+
+function formatProbeMatch(match) {
+  const home = match.homeTeam?.name || 'TBD'
+  const away = match.awayTeam?.name || 'TBD'
+  const utcDate = match.utcDate || 'TBD'
+  const status = match.status || 'UNKNOWN'
+  const score = match.score?.fullTime
+  const scoreText =
+    Number.isFinite(Number(score?.home)) && Number.isFinite(Number(score?.away))
+      ? `${score.home} - ${score.away}`
+      : 'no score'
+
+  return `${utcDate} | ${status} | ${home} vs ${away} | ${scoreText}`
+}
+
+async function probeFootballData() {
+  const [competitions, matches] = await Promise.all([
+    footballDataRequest('/competitions'),
+    footballDataRequest(`/competitions/${probeCompetition}/matches`, {
+      dateFrom: probeDateFrom,
+      dateTo: probeDateTo,
+      status: probeStatus,
+    }),
+  ])
+
+  const availableCompetitions = (competitions.competitions || []).map((competition) => ({
+    code: competition.code,
+    name: competition.name,
+    area: competition.area?.name,
+    currentSeason: competition.currentSeason?.startDate
+      ? `${competition.currentSeason.startDate} to ${competition.currentSeason.endDate}`
+      : 'n/a',
+  }))
+  const returnedMatches = matches.matches || []
+
+  if (jsonMode) {
+    console.log(
+      JSON.stringify(
+        {
+          provider: 'football-data',
+          competition: probeCompetition,
+          dateFrom: probeDateFrom,
+          dateTo: probeDateTo,
+          status: probeStatus || 'any',
+          competitions: availableCompetitions,
+          matches: returnedMatches,
+        },
+        null,
+        2,
+      ),
+    )
+    return
+  }
+
+  console.log('football-data.org probe')
+  console.log(`Competition: ${probeCompetition}`)
+  console.log(`Date range: ${probeDateFrom} to ${probeDateTo}`)
+  console.log(`Status: ${probeStatus || 'any'}`)
+  console.log('')
+  console.log(`Accessible competitions: ${availableCompetitions.length}`)
+  for (const competition of availableCompetitions.slice(0, 20)) {
+    console.log(`- ${competition.code || 'NO_CODE'} | ${competition.name} | ${competition.area || 'n/a'} | ${competition.currentSeason}`)
+  }
+  if (availableCompetitions.length > 20) {
+    console.log(`...and ${availableCompetitions.length - 20} more`)
+  }
+
+  console.log('')
+  console.log(`Matches returned: ${returnedMatches.length}`)
+  for (const match of returnedMatches.slice(0, 40)) {
+    console.log(`- ${formatProbeMatch(match)}`)
+  }
+  if (returnedMatches.length > 40) {
+    console.log(`...and ${returnedMatches.length - 40} more`)
+  }
 }
 
 async function loadResult(room) {
@@ -608,6 +713,12 @@ async function runOnce() {
 
 async function main() {
   const server = startHealthServer()
+
+  if (probeMode) {
+    await probeFootballData()
+    server?.close()
+    return
+  }
 
   process.on('SIGINT', () => {
     stopping = true

@@ -1093,6 +1093,10 @@ button.network-chip:hover,
   font-size: 12px;
 }
 
+.board-notice {
+  margin: 18px 24px 0;
+}
+
 .simple-grid,
 .hook-grid,
 .activity-list {
