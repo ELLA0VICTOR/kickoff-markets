@@ -13,7 +13,6 @@ type MarketBoardProps = {
   onMarketSelect: (id: string) => void
   onCreateClick: () => void
   onFaucetClick: () => void
-  onSeedFixtures: () => void
 }
 
 export function MarketBoard({
@@ -27,7 +26,6 @@ export function MarketBoard({
   onMarketSelect,
   onCreateClick,
   onFaucetClick,
-  onSeedFixtures,
 }: MarketBoardProps) {
   return (
     <main className="market-board">
@@ -41,11 +39,6 @@ export function MarketBoard({
           {contractReady ? (
             <button className="feed-chip feed-button" type="button" onClick={onFaucetClick}>
               Faucet collateral
-            </button>
-          ) : null}
-          {contractReady ? (
-            <button className="feed-chip feed-button" type="button" onClick={onSeedFixtures}>
-              Seed WC fixtures
             </button>
           ) : null}
           <button className="create-button" type="button" onClick={onCreateClick}>

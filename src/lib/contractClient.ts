@@ -275,7 +275,12 @@ function formatToken(value: bigint) {
 }
 
 function cleanTeamCode(name: string) {
-  return name
+  const cleanName = name.trim()
+  const words = cleanName.split(/[^a-zA-Z]+/).filter(Boolean)
+  const meaningfulWords = words[0]?.toLowerCase() === 'demo' || words[0]?.toLowerCase() === 'test' ? words.slice(1) : words
+  const source = meaningfulWords.join('') || cleanName
+
+  return source
     .trim()
     .replace(/[^a-zA-Z]/g, '')
     .slice(0, 3)

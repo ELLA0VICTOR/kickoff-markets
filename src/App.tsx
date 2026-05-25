@@ -9,7 +9,6 @@ import { type HomeTab, MarketTabs } from './components/product/MarketTabs'
 import { isCollateralTokenConfigured, isKickoffContractConfigured } from './config/contracts'
 import { hookSteps } from './data/markets'
 import type { ActivityRow, FinalMarketSettlement, MarketPhase, MatchMarket, PositionRow, RoomDraft } from './data/markets'
-import { worldCupSeedRooms } from './data/worldCupFixtures'
 import {
   addLiquidityTx,
   claimTx,
@@ -59,19 +58,6 @@ function matchesSearch(market: MatchMarket, query: string) {
 
 function actionMessage(action: string, approvalHash?: string) {
   return approvalHash ? `Approval confirmed. ${action} submitted to X Layer.` : `${action} submitted to X Layer.`
-}
-
-function normalizeRoomText(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
-}
-
-function hasRoom(markets: MatchMarket[], draft: RoomDraft) {
-  return markets.some(
-    (market) =>
-      normalizeRoomText(market.sides[0].name) === normalizeRoomText(draft.teamA) &&
-      normalizeRoomText(market.sides[1].name) === normalizeRoomText(draft.teamB) &&
-      market.kickoff === draft.kickoff,
-  )
 }
 
 function App() {
@@ -350,47 +336,6 @@ function App() {
     }
   }
 
-  async function seedWorldCupRooms() {
-    setActionStatus({ state: 'pending', message: 'Preparing World Cup fixture seed...' })
-
-    try {
-      const wallet = await ensureWalletForContract()
-      const latestState = await refreshOnchainState()
-      const currentMarkets = latestState?.markets ?? marketList
-      const missingRooms = worldCupSeedRooms.filter((draft) => !hasRoom(currentMarkets, draft))
-
-      if (missingRooms.length === 0) {
-        setActionStatus({ state: 'success', message: 'All seed fixtures already exist on-chain.' })
-        return
-      }
-
-      let lastTxHash: string | undefined
-
-      for (const [index, draft] of missingRooms.entries()) {
-        setActionStatus({
-          state: 'pending',
-          message: `Creating ${index + 1}/${missingRooms.length}: ${draft.teamA} vs ${draft.teamB}`,
-        })
-
-        const result = await createRoomTx(wallet.provider, wallet.address, draft)
-        lastTxHash = result.txHash
-      }
-
-      const state = await refreshOnchainState()
-      setActiveTab('All')
-      setSelectedMarketId(state?.markets[0]?.id)
-      setDetailMarketId(undefined)
-      setActionStatus({
-        state: 'success',
-        mode: 'onchain',
-        txHash: lastTxHash,
-        message: `${missingRooms.length} World Cup fixtures created on X Layer.`,
-      })
-    } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Fixture seeding failed.' })
-    }
-  }
-
   async function placeTrade(market: MatchMarket, sideIndex: number, amount: string) {
     setActionStatus({ state: 'pending', message: 'Approve collateral, then confirm the trade.' })
     try {
@@ -541,7 +486,6 @@ function App() {
         onCreateClick={() => setCreateRoomOpen(true)}
         onFaucetClick={claimCollateral}
         onMarketSelect={selectMarket}
-        onSeedFixtures={seedWorldCupRooms}
       />
     </>
   )
