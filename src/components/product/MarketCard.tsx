@@ -1,6 +1,7 @@
 import { Clock3, Droplets, Radio } from 'lucide-react'
 import type { MatchMarket } from '../../data/markets'
 import { formatCurrency } from '../../lib/format'
+import { countdownLabel, formatUtcTime } from '../../lib/matchTime'
 import { MatchPoster } from './MatchPoster'
 
 type MarketCardProps = {
@@ -40,6 +41,11 @@ export function MarketCard({ market, active, onSelect }: MarketCardProps) {
           <Droplets size={15} strokeWidth={1.8} />
           {formatCurrency(market.liquidity)}
         </span>
+        <span>
+          <Clock3 size={15} strokeWidth={1.8} />
+          {countdownLabel(market.kickoff)}
+        </span>
+        <span>{formatUtcTime(market.kickoff)}</span>
         <span>
           <Clock3 size={15} strokeWidth={1.8} />
           {market.minute}

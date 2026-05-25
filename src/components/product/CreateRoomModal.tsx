@@ -1,6 +1,7 @@
 import type { FormEvent } from 'react'
 import { useState } from 'react'
 import type { RoomDraft } from '../../data/markets'
+import { formatUtcTime, localDateTimeToUtcIso, toDateTimeLocalValue } from '../../lib/matchTime'
 
 type CreateRoomModalProps = {
   open: boolean
@@ -11,7 +12,7 @@ type CreateRoomModalProps = {
 export function CreateRoomModal({ open, onClose, onCreate }: CreateRoomModalProps) {
   const [teamA, setTeamA] = useState('Nigeria')
   const [teamB, setTeamB] = useState('Portugal')
-  const [kickoff, setKickoff] = useState('19:00 UTC')
+  const [kickoff, setKickoff] = useState(() => toDateTimeLocalValue(new Date(Date.now() + 2 * 60 * 60 * 1000)))
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
 
@@ -23,10 +24,15 @@ export function CreateRoomModal({ open, onClose, onCreate }: CreateRoomModalProp
     setError(undefined)
 
     try {
+      const kickoffIso = localDateTimeToUtcIso(kickoff)
+      if (!kickoffIso) {
+        throw new Error('Choose a valid kickoff date and time.')
+      }
+
       await onCreate({
         teamA: teamA.trim() || 'Team A',
         teamB: teamB.trim() || 'Team B',
-        kickoff: kickoff.trim() || 'TBD',
+        kickoff: kickoffIso,
       })
       onClose()
     } catch (createError) {
@@ -63,8 +69,9 @@ export function CreateRoomModal({ open, onClose, onCreate }: CreateRoomModalProp
           </label>
           <label>
             <span>Kickoff</span>
-            <input value={kickoff} onChange={(event) => setKickoff(event.target.value)} />
+            <input type="datetime-local" value={kickoff} onChange={(event) => setKickoff(event.target.value)} />
           </label>
+          <p className="form-help">{formatUtcTime(localDateTimeToUtcIso(kickoff) || kickoff)}</p>
           {error ? <p className="form-error">{error}</p> : null}
           <button className="primary-action" type="submit" disabled={pending}>
             {pending ? 'Creating' : 'Create room'}

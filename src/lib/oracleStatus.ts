@@ -1,4 +1,5 @@
 import type { MatchMarket } from '../data/markets'
+import { parseMatchTime } from './matchTime'
 
 export type OracleStatusKind =
   | 'pending'
@@ -19,13 +20,8 @@ export type OracleStatus = {
 const DEFAULT_MATCH_MINUTES = 90
 const DEFAULT_GRACE_MINUTES = 30
 
-function kickoffTime(value: string) {
-  const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? parsed : undefined
-}
-
 export function expectedResultTime(market: Pick<MatchMarket, 'kickoff'>) {
-  const kickoff = kickoffTime(market.kickoff)
+  const kickoff = parseMatchTime(market.kickoff)
   if (!kickoff) return undefined
 
   return kickoff + (DEFAULT_MATCH_MINUTES + DEFAULT_GRACE_MINUTES) * 60_000

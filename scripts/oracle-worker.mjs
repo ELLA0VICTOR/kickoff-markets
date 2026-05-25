@@ -1,6 +1,10 @@
 #!/usr/bin/env node
+import dns from 'node:dns'
 import fs from 'node:fs'
+import http from 'node:http'
 import path from 'node:path'
+
+dns.setDefaultResultOrder('ipv4first')
 
 const NETWORKS = {
   mainnet: {
@@ -20,6 +24,15 @@ const SIGNATURES = {
   getRoomState: 'getRoomState(bytes32)',
   submitResult: 'submitResult(bytes32,uint8,string,string)',
   resolveResult: 'resolveResult(bytes32,uint8,string,string)',
+}
+
+const SELECTORS = {
+  [SIGNATURES.roomCount]: '0xdf93a4e3',
+  [SIGNATURES.roomIdAt]: '0x2d9c15e6',
+  [SIGNATURES.getRoomMeta]: '0x0e0c4f72',
+  [SIGNATURES.getRoomState]: '0x41ac4f6d',
+  [SIGNATURES.submitResult]: '0xe7491b29',
+  [SIGNATURES.resolveResult]: '0xbd32aebb',
 }
 
 const SETTLEMENT = {
@@ -49,6 +62,7 @@ const OUTCOME = {
 const args = new Set(process.argv.slice(2))
 const jsonMode = args.has('--json')
 const dryRun = args.has('--dry-run') || args.has('--dry')
+const watchMode = args.has('--watch')
 const root = process.cwd()
 const env = loadEnv(root)
 const networkId = env.VITE_X_LAYER_NETWORK?.trim().toLowerCase() === 'mainnet' ? 'mainnet' : 'testnet'
@@ -59,7 +73,33 @@ const oracleAgentAddress = env.VITE_MATCH_ORACLE_AGENT_ADDRESS?.trim()
 const providerName = env.ORACLE_PROVIDER?.trim().toLowerCase() || 'manual'
 const resultGraceMinutes = Number(env.ORACLE_RESULT_GRACE_MINUTES || 30)
 const matchMinutes = Number(env.ORACLE_MATCH_MINUTES || 90)
-const selectorCache = new Map()
+const pollSeconds = Math.max(10, Number(readArg('--poll-seconds') || env.ORACLE_POLL_SECONDS || 60))
+const healthPort = Number(readArg('--health-port') || env.ORACLE_HEALTH_PORT || 0)
+const maxRuns = Number(readArg('--max-runs') || env.ORACLE_MAX_RUNS || 0)
+const startedAt = new Date().toISOString()
+let stopping = false
+let lastState = {
+  status: 'starting',
+  startedAt,
+  lastRunAt: undefined,
+  nextRunAt: undefined,
+  runs: 0,
+  rooms: 0,
+  resultReady: 0,
+  fallbackReady: 0,
+  pending: 0,
+  handled: 0,
+  error: undefined,
+}
+
+function readArg(name) {
+  const exact = process.argv.indexOf(name)
+  if (exact >= 0) return process.argv[exact + 1]
+
+  const prefix = `${name}=`
+  const matched = process.argv.find((arg) => arg.startsWith(prefix))
+  return matched ? matched.slice(prefix.length) : undefined
+}
 
 function loadEnv(basePath) {
   const output = { ...process.env }
@@ -175,7 +215,7 @@ function isAddress(value) {
 }
 
 async function rpcRequest(method, params = []) {
-  let lastError
+  const errors = []
 
   for (const rpcUrl of rpcUrls) {
     try {
@@ -194,20 +234,16 @@ async function rpcRequest(method, params = []) {
       return payload.result
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      lastError = new Error(`${rpcUrl}: ${message}`)
+      errors.push(`${rpcUrl}: ${message}`)
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error(`${method} failed`)
+  throw new Error(`${method} failed across ${rpcUrls.length} RPC endpoint(s): ${errors.join(' | ')}`)
 }
 
 async function selector(signature) {
-  const cached = selectorCache.get(signature)
-  if (cached) return cached
-
-  const hash = await rpcRequest('web3_sha3', [`0x${textToHex(signature)}`])
-  const value = hash.slice(0, 10)
-  selectorCache.set(signature, value)
+  const value = SELECTORS[signature]
+  if (!value) throw new Error(`Missing selector for ${signature}.`)
   return value
 }
 
@@ -446,15 +482,26 @@ async function inspectRoom(room) {
   }
 }
 
+function summarize(items) {
+  return {
+    rooms: items.length,
+    resultReady: items.filter((item) => item.status === 'result-ready').length,
+    fallbackReady: items.filter((item) => item.status === 'creator-fallback-enabled').length,
+    pending: items.filter((item) => item.status === 'oracle-pending' || item.status === 'operator-time-required').length,
+    handled: items.filter((item) => item.status === 'already-handled').length,
+  }
+}
+
 function printReport(items) {
   if (jsonMode) {
-    console.log(JSON.stringify({ network: network.name, provider: providerName, dryRun, items }, null, 2))
+    console.log(JSON.stringify({ network: network.name, provider: providerName, dryRun, watch: watchMode, items }, null, 2))
     return
   }
 
   console.log(`Kickoff Markets oracle worker`)
   console.log(`Network: ${network.name}`)
   console.log(`Provider: ${providerName}${dryRun ? ' (dry run)' : ''}`)
+  console.log(`Mode: ${watchMode ? `watching every ${pollSeconds}s` : 'one-shot check'}`)
   console.log(`Rooms inspected: ${items.length}`)
   console.log('')
 
@@ -482,7 +529,7 @@ function printReport(items) {
   }
 }
 
-async function main() {
+async function inspectAllRooms() {
   if (!isAddress(marketsAddress)) {
     throw new Error('Set VITE_KICKOFF_MARKETS_ADDRESS in .env before running the oracle worker.')
   }
@@ -496,7 +543,119 @@ async function main() {
     inspected.push(await inspectRoom(room))
   }
 
-  printReport(inspected)
+  return inspected
+}
+
+function startHealthServer() {
+  if (!healthPort) return undefined
+
+  const server = http.createServer((request, response) => {
+    const statusCode = lastState.status === 'error' ? 503 : 200
+    const payload = {
+      service: 'kickoff-markets-oracle-worker',
+      network: network.name,
+      provider: providerName,
+      dryRun,
+      watch: watchMode,
+      ...lastState,
+    }
+
+    if (request.url === '/health' || request.url === '/ready' || request.url === '/') {
+      response.writeHead(statusCode, { 'content-type': 'application/json' })
+      response.end(JSON.stringify(payload))
+      return
+    }
+
+    response.writeHead(404, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ error: 'not found' }))
+  })
+
+  server.listen(healthPort, () => {
+    if (!jsonMode) {
+      console.log(`Health endpoint listening on http://localhost:${healthPort}/health`)
+    }
+  })
+
+  return server
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function runOnce() {
+  lastState = {
+    ...lastState,
+    status: 'checking',
+    error: undefined,
+  }
+
+  const items = await inspectAllRooms()
+  const summary = summarize(items)
+  lastState = {
+    ...lastState,
+    status: 'idle',
+    lastRunAt: new Date().toISOString(),
+    nextRunAt: watchMode ? new Date(Date.now() + pollSeconds * 1000).toISOString() : undefined,
+    runs: lastState.runs + 1,
+    ...summary,
+    error: undefined,
+  }
+
+  printReport(items)
+  return items
+}
+
+async function main() {
+  const server = startHealthServer()
+
+  process.on('SIGINT', () => {
+    stopping = true
+    if (!jsonMode) console.log('Stopping oracle worker...')
+  })
+  process.on('SIGTERM', () => {
+    stopping = true
+    if (!jsonMode) console.log('Stopping oracle worker...')
+  })
+
+  if (!watchMode) {
+    await runOnce()
+    server?.close()
+    return
+  }
+
+  if (!jsonMode) {
+    console.log(`Kickoff Markets oracle watcher started on ${network.name}`)
+    console.log(`Provider: ${providerName}${dryRun ? ' (dry run)' : ''}`)
+    console.log(`Polling every ${pollSeconds}s`)
+    console.log('')
+  }
+
+  while (!stopping) {
+    try {
+      await runOnce()
+    } catch (error) {
+      lastState = {
+        ...lastState,
+        status: 'error',
+        lastRunAt: new Date().toISOString(),
+        nextRunAt: new Date(Date.now() + pollSeconds * 1000).toISOString(),
+        runs: lastState.runs + 1,
+        error: error instanceof Error ? error.message : String(error),
+      }
+
+      if (jsonMode) {
+        console.error(JSON.stringify({ error: lastState.error }))
+      } else {
+        console.error(lastState.error)
+      }
+    }
+
+    if (maxRuns > 0 && lastState.runs >= maxRuns) break
+    if (!stopping) await sleep(pollSeconds * 1000)
+  }
+
+  server?.close()
 }
 
 main().catch((error) => {

@@ -155,6 +155,8 @@ ORACLE_PROVIDER=manual
 ORACLE_RESULTS_FILE=scripts/oracle-results.json
 ORACLE_MATCH_MINUTES=90
 ORACLE_RESULT_GRACE_MINUTES=30
+ORACLE_POLL_SECONDS=60
+ORACLE_HEALTH_PORT=
 X_LAYER_RPC_URL=
 FOOTBALL_DATA_API_TOKEN=
 ORACLE_RESULT_ENDPOINT=
@@ -185,6 +187,7 @@ Oracle check:
 ```bash
 npm run oracle:check
 npm run oracle:dry
+npm run oracle:watch
 ```
 
 ## X Layer Networks
@@ -267,6 +270,34 @@ npm run build
 
 Deploy the Vite app to Vercel, Netlify, or another static host. Configure the same `VITE_X_LAYER_NETWORK`, `VITE_COLLATERAL_TOKEN_ADDRESS`, and `VITE_KICKOFF_MARKETS_ADDRESS` environment variables in the hosting dashboard.
 
+### 6. Deploy Oracle Worker
+
+Run the oracle worker as a background service on Render, Railway, Fly, a VPS, or another Node host:
+
+```bash
+npm run oracle:watch
+```
+
+Recommended service environment:
+
+```txt
+VITE_X_LAYER_NETWORK=testnet
+VITE_KICKOFF_MARKETS_ADDRESS=0xYourKickoffMarkets
+VITE_MATCH_ORACLE_AGENT_ADDRESS=0xYourMatchOracleAgent
+ORACLE_PROVIDER=manual
+ORACLE_RESULTS_FILE=scripts/oracle-results.json
+ORACLE_POLL_SECONDS=60
+ORACLE_HEALTH_PORT=3001
+X_LAYER_RPC_URL=https://testrpc.xlayer.tech/terigon
+```
+
+Health endpoint:
+
+```txt
+/health
+/ready
+```
+
 ## Contract Surface
 
 The frontend calls:
@@ -326,13 +357,14 @@ When `KickoffMarkets.setMatchClockHook(hookAddress)` is configured, `KickoffMark
 
 Chainlink settlement is not a hard dependency on X Layer testnet. Kickoff Markets uses an oracle-agent adapter that can be driven by a sports API or by a local verified result file during rehearsal:
 
-1. `scripts/oracle-worker.mjs` reads rooms from `KickoffMarkets`.
-2. The worker waits until the expected full-time result window.
-3. It checks the configured provider: `manual`, `football-data`, or `generic`.
-4. If a result is available, it prints the exact `MatchOracleAgent.submitResult` call and calldata.
-5. The oracle operator signs that transaction.
-6. The agent proposes settlement on `KickoffMarkets`.
-7. Users still receive the optimistic dispute window before finalization.
+1. `scripts/oracle-worker.mjs` runs as a long-lived backend process with `npm run oracle:watch`.
+2. The worker reads rooms from `KickoffMarkets` on every poll.
+3. It waits until each room reaches the expected full-time result window.
+4. It checks the configured provider: `manual`, `football-data`, or `generic`.
+5. If a result is available, it prints the exact `MatchOracleAgent.submitResult` call and calldata.
+6. The oracle operator signs that transaction.
+7. The agent proposes settlement on `KickoffMarkets`.
+8. Users still receive the optimistic dispute window before finalization.
 
 If the provider cannot return a verified result, the UI displays creator fallback and the room creator can propose the result through the same optimistic settlement path. This keeps the product deployable on X Layer testnet without pretending an unsupported Chainlink feed exists.
 
@@ -341,6 +373,7 @@ Manual rehearsal file:
 ```bash
 copy scripts\oracle-results.example.json scripts\oracle-results.json
 npm run oracle:dry
+npm run oracle:watch
 ```
 
 ## Security Notes

@@ -894,7 +894,7 @@ button.network-chip:hover,
 
 .score-strip {
   display: grid;
-  grid-template-columns: auto 1fr 1fr;
+  grid-template-columns: auto 0.8fr 1fr 1fr;
   gap: 1px;
   margin-top: 24px;
   background: var(--border-soft);
@@ -1222,6 +1222,12 @@ button.network-chip:hover,
 .form-error {
   margin: 0;
   color: var(--danger);
+  font-size: 12px;
+}
+
+.form-help {
+  margin: -4px 0 0;
+  color: var(--muted);
   font-size: 12px;
 }
 

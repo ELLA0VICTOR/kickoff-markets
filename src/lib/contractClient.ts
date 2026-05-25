@@ -92,7 +92,7 @@ const FAUCET_SIG = 'faucet()'
 
 const EVENT_SIGNATURES = {
   claimed: 'Claimed(bytes32,address,uint256)',
-  liquidity: 'LiquidityAdded(bytes32,address,uint8,uint256)',
+  liquidity: 'LiquidityAdded(bytes32,address,uint256,uint256)',
   phase: 'PhaseUpdated(bytes32,uint8,string,string,uint16)',
   room: 'RoomCreated(bytes32,string,string,string,address)',
   settled: 'RoomSettled(bytes32,uint8,string,string)',
@@ -101,11 +101,42 @@ const EVENT_SIGNATURES = {
   trade: 'TradePlaced(bytes32,address,uint8,uint256,uint256,uint256,uint16)',
 }
 
+const SELECTORS: Record<string, string> = {
+  [ADD_LIQUIDITY_SIG]: '0x1c773f89',
+  [ALLOWANCE_SIG]: '0xdd62ed3e',
+  [APPROVE_SIG]: '0x095ea7b3',
+  [BALANCE_OF_SIG]: '0x70a08231',
+  [CLAIM_SIG]: '0xbd66528a',
+  [CREATE_ROOM_SIG]: '0x1ea7c445',
+  [DISPUTE_SETTLEMENT_SIG]: '0xb82cfebb',
+  [FAUCET_SIG]: '0xde5f72fd',
+  [FINALIZE_SETTLEMENT_SIG]: '0x19f3b062',
+  [GET_POSITION_SIG]: '0x5c388821',
+  [GET_ROOM_META_SIG]: '0x0e0c4f72',
+  [GET_ROOM_STATE_SIG]: '0x41ac4f6d',
+  [GET_ROOM_TOTALS_SIG]: '0xe80de06b',
+  [PLACE_TRADE_SIG]: '0xa115ce18',
+  [PROPOSE_SETTLEMENT_SIG]: '0xb9669837',
+  [QUOTE_CLAIM_SIG]: '0xfe4bb1f9',
+  [RESOLVE_DISPUTE_SIG]: '0x6482f984',
+  [ROOM_COUNT_SIG]: '0xdf93a4e3',
+  [ROOM_ID_AT_SIG]: '0x2d9c15e6',
+  [UPDATE_PHASE_SIG]: '0xb6af842b',
+}
+
+const EVENT_TOPICS: Record<string, string> = {
+  [EVENT_SIGNATURES.claimed]: '0x0508a8b4117d9a7b3d8f5895f6413e61b4f9a2df35afbfb41e78d0ecfff1843f',
+  [EVENT_SIGNATURES.liquidity]: '0x47b0d68dd7ea64624970139aa6c676e4e099d12cee4af2dfe393f2353fea86b1',
+  [EVENT_SIGNATURES.phase]: '0x9311eb84f307cc70564bd3a5ce86869817ee02996fd9786ee4dd74a706b2e993',
+  [EVENT_SIGNATURES.room]: '0xca00d9b3949673c33d73e70a45cfe412ce26b358a9a288fc5ebde67c9838b5c5',
+  [EVENT_SIGNATURES.settled]: '0x81c71618da198d131a5b55e16329ff0c9d6f2865e4b39780ba0a615c5fd42c49',
+  [EVENT_SIGNATURES.settlementDisputed]: '0xfaf378cd9c8872e7bc3d17220cb0c51ac3c884eafc1cbe32398629b955b92c97',
+  [EVENT_SIGNATURES.settlementProposed]: '0xada32f8a9c6192701eb5f00a8f25828a6bd58dd5aa0229d680334c3eb8ee8626',
+  [EVENT_SIGNATURES.trade]: '0x538f4ceb3fa05614310d763da21dc58461ae4e926c21439f18747f89d79856b0',
+}
+
 const TOKEN_DECIMALS = 6n
 const TOKEN_SCALE = 10n ** TOKEN_DECIMALS
-const selectorCache = new Map<string, string>()
-const eventTopicCache = new Map<string, string>()
-
 type AbiValue =
   | {
       kind: 'address' | 'bytes32' | 'string'
@@ -357,22 +388,15 @@ async function rpcRequest<T>(method: string, params: unknown[] = []): Promise<T>
 }
 
 async function selector(signature: string) {
-  const cached = selectorCache.get(signature)
-  if (cached) return cached
-
-  const hash = await rpcRequest<string>('web3_sha3', [`0x${textToHex(signature)}`])
-  const value = hash.slice(0, 10)
-  selectorCache.set(signature, value)
+  const value = SELECTORS[signature]
+  if (!value) throw new Error(`Missing selector for ${signature}.`)
   return value
 }
 
 async function eventTopic(signature: string) {
-  const cached = eventTopicCache.get(signature)
-  if (cached) return cached
-
-  const hash = await rpcRequest<string>('web3_sha3', [`0x${textToHex(signature)}`])
-  eventTopicCache.set(signature, hash.toLowerCase())
-  return hash.toLowerCase()
+  const value = EVENT_TOPICS[signature]
+  if (!value) throw new Error(`Missing event topic for ${signature}.`)
+  return value
 }
 
 async function encodeCall(signature: string, args: AbiValue[] = []) {
@@ -660,7 +684,7 @@ async function loadActivityLogs(roomLabels: Map<string, string>) {
 
     if (topic === topics.liquidity) {
       const provider = topicToAddress(log.topics[2])
-      const amount = readUint(log.data, 1)
+      const amount = readUint(log.data, 0)
       if (roomId && provider) {
         const traders = tradersByRoom.get(roomId) ?? new Set<string>()
         traders.add(provider.toLowerCase())

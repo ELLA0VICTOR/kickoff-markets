@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { explorerTxUrl } from '../../config/contracts'
 import type { ActivityRow, FinalMarketSettlement, HookStep, MarketPhase, MatchMarket, PositionRow } from '../../data/markets'
 import { formatCurrency, formatNumber } from '../../lib/format'
+import { countdownLabel, formatUtcTime } from '../../lib/matchTime'
 import { getOracleStatus } from '../../lib/oracleStatus'
 import type { ActionStatus } from '../../types/integration'
 import { MatchPoster } from './MatchPoster'
@@ -133,7 +134,8 @@ export function MarketPage({
           <div className="score-strip">
             <strong>{market.score}</strong>
             <span>{market.minute}</span>
-            <span>{market.pool}</span>
+            <span>{countdownLabel(market.kickoff, now)}</span>
+            <span>{formatUtcTime(market.kickoff)}</span>
           </div>
 
           <div className="detail-stats">
