@@ -816,9 +816,7 @@ export async function loadOnchainState(walletAddress?: string): Promise<OnchainS
     tradersByRoom = activity.tradersByRoom
     txCountByRoom = activity.txCountByRoom
   } catch {
-    activityRows = []
-    tradersByRoom = new Map()
-    txCountByRoom = new Map()
+    // Markets should still render if a public RPC throttles log history.
   }
 
   const positions = await Promise.all(rooms.map((room) => readPosition(room.roomId, walletAddress)))
