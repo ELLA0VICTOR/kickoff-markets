@@ -43,6 +43,7 @@ body,
   min-height: 100vh;
   margin: 0;
   background: var(--bg);
+  overflow-x: clip;
 }
 
 button,
@@ -1356,6 +1357,7 @@ button.network-chip:hover,
 @media (max-width: 820px) {
   .app-shell {
     border-inline: 0;
+    overflow-x: clip;
   }
 
   .app-topbar {
@@ -1376,6 +1378,8 @@ button.network-chip:hover,
   }
 
   .topbar-actions {
+    display: grid;
+    grid-template-columns: 38px minmax(72px, 92px) minmax(0, 124px);
     justify-content: end;
     gap: 6px;
     min-width: 0;
@@ -1384,9 +1388,32 @@ button.network-chip:hover,
   .link-button,
   .wallet-button,
   .network-chip {
+    min-width: 0;
     min-height: 36px;
     padding-inline: 10px;
     font-size: 12px;
+  }
+
+  .link-button {
+    width: 38px;
+    padding-inline: 0;
+  }
+
+  .network-chip,
+  .wallet-button {
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .wallet-button {
+    max-width: 124px;
+  }
+
+  .wallet-button span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .wide-label {
@@ -1398,7 +1425,7 @@ button.network-chip:hover,
   }
 
   .market-tabs {
-    top: 104px;
+    top: 112px;
     gap: 24px;
     min-height: 52px;
     padding-inline: 18px;
@@ -1423,7 +1450,16 @@ button.network-chip:hover,
 
   .board-header {
     align-items: center;
+    gap: 12px;
     padding: 18px;
+  }
+
+  .board-header > div:first-child {
+    min-width: 0;
+  }
+
+  .board-header h1 {
+    font-size: 34px;
   }
 
   .feed-chip {
@@ -1459,8 +1495,16 @@ button.network-chip:hover,
     padding: 12px;
   }
 
+  .market-card .match-poster {
+    aspect-ratio: 16 / 9;
+  }
+
   .market-card h3 {
     min-height: 0;
+    font-size: 18px;
+  }
+
+  .price-row strong {
     font-size: 18px;
   }
 
@@ -1474,6 +1518,11 @@ button.network-chip:hover,
     padding: 16px;
   }
 
+  .detail-summary h1 {
+    font-size: 32px;
+    line-height: 1.05;
+  }
+
   .oracle-strip {
     align-items: start;
     flex-direction: column;
@@ -1484,6 +1533,29 @@ button.network-chip:hover,
   .detail-stats,
   .score-strip {
     grid-template-columns: 1fr;
+  }
+
+  .score-strip strong,
+  .score-strip span {
+    min-height: 48px;
+  }
+
+  .outcome-card {
+    min-height: 180px;
+    padding: 18px;
+  }
+
+  .outcome-card strong {
+    font-size: 32px;
+  }
+
+  .ticket-panel input {
+    font-size: 22px;
+  }
+
+  .oracle-actions button {
+    flex: 1 1 calc(50% - 8px);
+    min-width: 0;
   }
 
   .activity-row {
@@ -1539,5 +1611,43 @@ button.network-chip:hover,
 
   .footer-brand p {
     font-size: 15px;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-topbar {
+    padding-inline: 12px;
+  }
+
+  .topbar-actions {
+    grid-template-columns: 36px minmax(60px, 76px) minmax(0, 104px);
+    gap: 5px;
+  }
+
+  .link-button {
+    width: 36px;
+  }
+
+  .network-chip,
+  .wallet-button {
+    padding-inline: 8px;
+    font-size: 11px;
+  }
+
+  .wallet-button {
+    max-width: 104px;
+  }
+
+  .market-tabs {
+    gap: 22px;
+    padding-inline: 16px;
+  }
+
+  .board-header {
+    padding: 16px;
+  }
+
+  .create-button {
+    padding-inline: 10px;
   }
 }
