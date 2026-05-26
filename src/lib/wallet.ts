@@ -36,11 +36,21 @@ const X_LAYER_CHAIN = {
   blockExplorerUrls: X_LAYER_NETWORK.blockExplorerUrls,
 }
 
+const X_LAYER_MANUAL_SWITCH_MESSAGE =
+  `Open OKX Wallet and switch to the built-in ${X_LAYER_NETWORK.name}. Do not use a custom RPC entry; OKX may reject transactions on custom X Layer networks.`
+
 export function getWalletProvider() {
   if (typeof window === 'undefined') return undefined
 
   const walletWindow = window as WalletWindow
   return walletWindow.okxwallet || walletWindow.ethereum
+}
+
+function isOkxProvider(provider: EthereumProvider) {
+  if (typeof window === 'undefined') return false
+
+  const walletWindow = window as WalletWindow
+  return walletWindow.okxwallet === provider
 }
 
 export function shortAddress(address: string) {
@@ -76,6 +86,10 @@ export async function readInjectedWallet(provider: EthereumProvider): Promise<Wa
 }
 
 export async function switchToXLayer(provider: EthereumProvider) {
+  if (isOkxProvider(provider)) {
+    throw new Error(X_LAYER_MANUAL_SWITCH_MESSAGE)
+  }
+
   try {
     await provider.request({
       method: 'wallet_switchEthereumChain',
@@ -83,11 +97,7 @@ export async function switchToXLayer(provider: EthereumProvider) {
     })
   } catch (error) {
     if (typeof error === 'object' && error && 'code' in error && Number(error.code) === 4902) {
-      await provider.request({
-        method: 'wallet_addEthereumChain',
-        params: [X_LAYER_CHAIN],
-      })
-      return
+      throw new Error(X_LAYER_MANUAL_SWITCH_MESSAGE)
     }
 
     throw error
