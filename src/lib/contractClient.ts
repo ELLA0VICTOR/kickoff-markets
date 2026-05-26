@@ -320,6 +320,8 @@ function phaseToContract(value: MarketPhase) {
 }
 
 function marketStatus(phase: MarketPhase, settlement: MarketSettlement): MatchMarket['status'] {
+  if (settlement === 'side-a' || settlement === 'side-b') return 'settled'
+  if (settlement === 'cancelled') return 'cancelled'
   if (settlement !== 'open' || phase === 'settlement') return 'settling'
   if (phase === 'live' || phase === 'halftime') return 'live'
   return 'open'

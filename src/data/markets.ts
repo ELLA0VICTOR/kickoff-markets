@@ -32,7 +32,7 @@ export type MatchMarket = {
   pool: string
   creator: string
   proposer: string
-  status: 'live' | 'open' | 'settling'
+  status: 'live' | 'open' | 'settling' | 'settled' | 'cancelled'
   liquidity: number
   volume: number
   traders: number
