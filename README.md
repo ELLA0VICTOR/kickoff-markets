@@ -57,17 +57,18 @@ flowchart TD
 ## Product Workflow
 
 1. User opens the match board.
-2. App reads rooms and events from the configured X Layer contract.
+2. App displays the latest cached room snapshot immediately, then refreshes rooms and events from X Layer.
 3. User creates a match room or opens an existing one.
 4. User claims test collateral on testnet, or uses a configured real ERC20 collateral on mainnet.
 5. User approves the market contract.
-6. User trades a team outcome or adds liquidity.
-7. Oracle worker or room creator updates Match Clock state as the match changes.
-8. Oracle worker checks the post-match result window.
-9. Oracle agent proposes the result when data is available.
-10. If data is unavailable, creator fallback proposes the result.
-11. Users may dispute during the optimistic window.
-12. Finalized rooms unlock escrow-backed payouts.
+6. A room must have LP collateral before trading opens.
+7. User trades a team outcome or adds liquidity.
+8. Oracle worker or room creator updates Match Clock state as the match changes.
+9. Oracle worker checks the post-match result window.
+10. Oracle agent proposes the result when data is available.
+11. If data is unavailable, creator fallback proposes the result.
+12. Users may dispute during the optimistic window.
+13. Finalized rooms unlock escrow-backed payouts.
 
 ## Project Structure
 
@@ -95,6 +96,7 @@ kickoff-markets/
 |   |      |-- Footer.tsx            # Project footer and resources
 |   |      |-- HowItWorksModal.tsx   # Product flow explanation
 |   |      |-- KickoffMark.tsx       # Brand mark
+|   |      |-- LoadingMark.tsx       # Compact loading indicator for chain actions
 |   |      |-- MarketBoard.tsx       # On-chain market grid
 |   |      |-- MarketCard.tsx        # Visual match card
 |   |      |-- MarketPage.tsx        # Trade, liquidity, hook, activity tabs
@@ -108,6 +110,7 @@ kickoff-markets/
 |   |   |-- contractClient.ts        # ABI encoding, chain reads, tx helpers
 |   |   |-- format.ts                # Number and currency formatting
 |   |   |-- matchTime.ts             # Kickoff countdown and UTC match-time helpers
+|   |   |-- onchainCache.ts          # Browser cache for instant market-board boot
 |   |   |-- oracleStatus.ts          # Oracle/fallback status derivation
 |   |   `-- wallet.ts                # Wallet connect and network switch helpers
 |   |-- types/
@@ -227,8 +230,10 @@ npm run oracle:watch
 
 | Network | Env value | Chain ID | RPC | Explorer | Faucet |
 | --- | --- | --- | --- | --- | --- |
-| X Layer testnet | `testnet` | `1952` / `0x7a0` | `https://testrpc.xlayer.tech/terigon` | `https://www.okx.com/web3/explorer/xlayer-test` | `https://web3.okx.com/xlayer/faucet` |
+| X Layer testnet | `testnet` | `1952` / `0x7a0` | `https://testrpc.xlayer.tech` | `https://www.oklink.com/xlayer-test` | `https://web3.okx.com/xlayer/faucet` |
 | X Layer mainnet | `mainnet` | `196` / `0xc4` | `https://rpc.xlayer.tech` | `https://www.okx.com/web3/explorer/xlayer` | Use real OKB for gas |
+
+The frontend can also accept `VITE_X_LAYER_RPC_URL`, but it always keeps the built-in X Layer RPC list as fallback. This prevents a single slow or failed RPC endpoint from blanking the market board.
 
 ## Deployment
 
@@ -237,7 +242,7 @@ npm run oracle:watch
 1. Install OKX Wallet.
 2. Create a fresh deployer wallet or import the wallet you intend to use.
 3. Back up the seed phrase offline.
-4. Switch to X Layer testnet.
+4. Switch to the built-in X Layer testnet network in OKX Wallet.
 5. Claim testnet OKB from the X Layer faucet for gas.
 
 ### 2. Deploy Contracts
@@ -314,13 +319,14 @@ npm run dev
 1. Connect OKX Wallet.
 2. Click `Faucet collateral` to mint test ERC20 collateral.
 3. Create a match room.
-4. Add liquidity or place a trade.
-5. Use creator controls in the `Hook` tab, or run the oracle worker, to update the Match Clock state.
-6. Run `npm run oracle:dry` after the expected full-time window.
-7. If a result is available, the worker prints or submits `MatchOracleAgent.submitResult`.
-8. If no result is available, use the creator fallback controls in the `Hook` tab.
-9. Finalize after the dispute window, then claim payout.
-10. Open the transaction link to verify the action on the X Layer explorer.
+4. Add liquidity to seed the room.
+5. Place a trade after the room has LP reserves.
+6. Use creator controls in the `Hook` tab, or run the oracle worker, to update the Match Clock state.
+7. Run `npm run oracle:dry` after the expected full-time window.
+8. If a result is available, the worker prints or submits `MatchOracleAgent.submitResult`.
+9. If no result is available, use the creator fallback controls in the `Hook` tab.
+10. Finalize after the dispute window, then claim payout.
+11. Open the transaction link to verify the action on the X Layer explorer.
 
 ### 5. Deploy Frontend
 
@@ -351,7 +357,7 @@ ORACLE_RESULTS_FILE=scripts/oracle-results.json
 ORACLE_POLL_SECONDS=60
 ORACLE_HEALTH_PORT=3001
 ORACLE_FOOTBALL_DATA_COMPETITION=WC
-X_LAYER_RPC_URL=https://testrpc.xlayer.tech/terigon
+X_LAYER_RPC_URL=https://testrpc.xlayer.tech
 ```
 
 For production-style automation, use a backend-only operator wallet with limited gas funds:
@@ -426,6 +432,8 @@ Side B odds = reserveA / (reserveA + reserveB)
 ```
 
 At final settlement, winning shares redeem from escrow. LPs receive their pro-rata value of the winning reserve plus accumulated fee pool.
+
+Trading is disabled until a room has liquidity. For official World Cup rooms, the intended operator flow is to create fixtures ahead of time and seed each room before kickoff so visitors can trade immediately.
 
 ## Optimistic Settlement
 
