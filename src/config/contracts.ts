@@ -44,7 +44,7 @@ function resolveConfiguredNetwork(): XLayerNetworkId {
 }
 
 export const X_LAYER_NETWORK = X_LAYER_NETWORKS[resolveConfiguredNetwork()]
-export const X_LAYER_RPC_URLS = configuredRpcUrl ? [configuredRpcUrl] : X_LAYER_NETWORK.rpcUrls
+export const X_LAYER_RPC_URLS = Array.from(new Set([configuredRpcUrl, ...X_LAYER_NETWORK.rpcUrls].filter(Boolean)))
 
 export const KICKOFF_MARKETS_ADDRESS = configuredKickoffAddress
 export const COLLATERAL_TOKEN_ADDRESS = configuredCollateralAddress
