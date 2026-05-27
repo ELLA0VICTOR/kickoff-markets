@@ -35,6 +35,7 @@ import {
   type WalletStatus,
 } from './lib/wallet'
 import type { ActionStatus } from './types/integration'
+import { readCachedOnchainState, writeCachedOnchainState } from './lib/onchainCache'
 
 function matchesTab(market: MatchMarket, tab: HomeTab, portfolioPools: Set<string>) {
   if (tab === 'All') return true
@@ -61,12 +62,13 @@ function actionMessage(action: string, approvalHash?: string) {
 }
 
 function App() {
-  const [marketList, setMarketList] = useState<MatchMarket[]>([])
-  const [activityList, setActivityList] = useState<ActivityRow[]>([])
+  const [cachedBootState] = useState(() => readCachedOnchainState())
+  const [marketList, setMarketList] = useState<MatchMarket[]>(() => cachedBootState?.markets ?? [])
+  const [activityList, setActivityList] = useState<ActivityRow[]>(() => cachedBootState?.activityRows ?? [])
   const [positionList, setPositionList] = useState<PositionRow[]>([])
   const [query, setQuery] = useState('')
   const [activeTab, setActiveTab] = useState<HomeTab>('All')
-  const [selectedMarketId, setSelectedMarketId] = useState<string>()
+  const [selectedMarketId, setSelectedMarketId] = useState<string | undefined>(() => cachedBootState?.markets[0]?.id)
   const [detailMarketId, setDetailMarketId] = useState<string>()
   const [howItWorksOpen, setHowItWorksOpen] = useState(false)
   const [createRoomOpen, setCreateRoomOpen] = useState(false)
@@ -81,6 +83,14 @@ function App() {
   const contractReady = isKickoffContractConfigured() && isCollateralTokenConfigured()
   const walletAddress = walletSession?.address
 
+  const applyOnchainState = useCallback((state: OnchainState) => {
+    setMarketList(state.markets)
+    setActivityList(state.activityRows)
+    setPositionList(state.positions)
+    setSelectedMarketId((current) => (current && state.markets.some((market) => market.id === current) ? current : state.markets[0]?.id))
+    writeCachedOnchainState(state)
+  }, [])
+
   const refreshOnchainState = useCallback(async (): Promise<OnchainState | undefined> => {
     if (!isKickoffContractConfigured()) {
       setMarketList([])
@@ -92,12 +102,12 @@ function App() {
 
     setLoadingState(true)
     try {
-      const state = await loadOnchainState(walletAddress)
-      setMarketList(state.markets)
-      setActivityList(state.activityRows)
-      setPositionList(state.positions)
+      const state = await loadOnchainState(walletAddress, (partialState) => {
+        applyOnchainState(partialState)
+        setLoadError(undefined)
+      })
+      applyOnchainState(state)
       setLoadError(undefined)
-      setSelectedMarketId((current) => (current && state.markets.some((market) => market.id === current) ? current : state.markets[0]?.id))
 
       if (walletAddress && isCollateralTokenConfigured()) {
         setCollateralBalance(await readCollateralBalance(walletAddress))
@@ -113,7 +123,7 @@ function App() {
     } finally {
       setLoadingState(false)
     }
-  }, [walletAddress])
+  }, [applyOnchainState, walletAddress])
 
   useEffect(() => {
     const provider = getWalletProvider()
@@ -279,13 +289,15 @@ function App() {
       setWalletStatus('connected')
     }
 
+    await switchToXLayer(provider)
+    const refreshed = await readInjectedWallet(provider)
+    if (refreshed) {
+      setWalletSession(refreshed)
+      session = refreshed
+    }
+
     if (!isXLayer(session.chainId)) {
-      await switchToXLayer(provider)
-      const refreshed = await readInjectedWallet(provider)
-      if (refreshed) {
-        setWalletSession(refreshed)
-        session = refreshed
-      }
+      throw new Error('Wallet did not switch to X Layer Testnet.')
     }
 
     return { provider, address: session.address }
@@ -296,7 +308,7 @@ function App() {
     try {
       const wallet = await ensureWalletForContract()
       const result = await faucetCollateralTx(wallet.provider, wallet.address)
-      await refreshOnchainState()
+      setCollateralBalance(await readCollateralBalance(wallet.address))
       setActionStatus({
         state: 'success',
         mode: 'onchain',

@@ -2,6 +2,7 @@ import type { FormEvent } from 'react'
 import { useState } from 'react'
 import type { RoomDraft } from '../../data/markets'
 import { formatUtcTime, localDateTimeToUtcIso, toDateTimeLocalValue } from '../../lib/matchTime'
+import { LoadingMark } from './LoadingMark'
 
 type CreateRoomModalProps = {
   open: boolean
@@ -74,7 +75,14 @@ export function CreateRoomModal({ open, onClose, onCreate }: CreateRoomModalProp
           <p className="form-help">{formatUtcTime(localDateTimeToUtcIso(kickoff) || kickoff)}</p>
           {error ? <p className="form-error">{error}</p> : null}
           <button className="primary-action" type="submit" disabled={pending}>
-            {pending ? 'Creating' : 'Create room'}
+            {pending ? (
+              <>
+                <LoadingMark size="small" label="Creating room" />
+                Creating
+              </>
+            ) : (
+              'Create room'
+            )}
           </button>
         </form>
       </section>

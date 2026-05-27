@@ -32,9 +32,9 @@ export const X_LAYER_NETWORKS = {
     name: 'X Layer Testnet',
     chainId: '0x7a0',
     decimalChainId: 1952,
-    rpcUrls: ['https://testrpc.xlayer.tech/terigon', 'https://xlayertestrpc.okx.com/terigon'],
-    blockExplorerUrls: ['https://www.okx.com/web3/explorer/xlayer-test'],
-    explorerTxBase: 'https://www.okx.com/web3/explorer/xlayer-test/tx',
+    rpcUrls: ['https://testrpc.xlayer.tech', 'https://testrpc.xlayer.tech/terigon', 'https://xlayertestrpc.okx.com/terigon'],
+    blockExplorerUrls: ['https://www.oklink.com/xlayer-test'],
+    explorerTxBase: 'https://www.oklink.com/xlayer-test/tx',
     faucetUrl: 'https://web3.okx.com/xlayer/faucet',
   },
 } satisfies Record<XLayerNetworkId, XLayerNetworkConfig>

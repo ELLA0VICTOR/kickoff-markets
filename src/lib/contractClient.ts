@@ -1,6 +1,7 @@
 import {
   COLLATERAL_TOKEN_ADDRESS,
   KICKOFF_MARKETS_ADDRESS,
+  X_LAYER_NETWORK,
   X_LAYER_RPC_URLS,
   isCollateralTokenConfigured,
   isKickoffContractConfigured,
@@ -18,6 +19,7 @@ type TransactionRequest = {
   from: string
   to: string
   data: string
+  chainId?: string
   value?: string
 }
 
@@ -68,6 +70,8 @@ export type OnchainState = {
   markets: MatchMarket[]
   positions: PositionRow[]
 }
+
+export type OnchainStateListener = (state: OnchainState) => void
 
 const ROOM_COUNT_SIG = 'roomCount()'
 const ROOM_ID_AT_SIG = 'roomIdAt(uint256)'
@@ -424,7 +428,7 @@ async function readLatestBlockNumber() {
 async function sendTransaction(provider: EthereumProvider, from: string, to: string, data: string) {
   return provider.request<string>({
     method: 'eth_sendTransaction',
-    params: [{ from, to, data, value: '0x0' } satisfies TransactionRequest],
+    params: [{ from, to, data, chainId: X_LAYER_NETWORK.chainId, value: '0x0' } satisfies TransactionRequest],
   })
 }
 
@@ -804,7 +808,7 @@ async function loadActivityLogs(roomLabels: Map<string, string>) {
   return { activityRows, tradersByRoom, txCountByRoom }
 }
 
-export async function loadOnchainState(walletAddress?: string): Promise<OnchainState> {
+export async function loadOnchainState(walletAddress?: string, onPartialState?: OnchainStateListener): Promise<OnchainState> {
   if (!isKickoffContractConfigured()) {
     return { activityRows: [], markets: [], positions: [] }
   }
@@ -813,9 +817,18 @@ export async function loadOnchainState(walletAddress?: string): Promise<OnchainS
   const roomIds = await Promise.all(Array.from({ length: count }, (_, index) => readRoomIdAt(index)))
   const rooms = await Promise.all(roomIds.map((roomId) => readRoom(roomId)))
   const roomLabels = new Map(rooms.map((room) => [room.roomId, `${cleanTeamCode(room.teamA)}/${cleanTeamCode(room.teamB)}`]))
+  const positions = await Promise.all(rooms.map((room) => readPosition(room.roomId, walletAddress)))
+  const preliminaryMarkets = rooms.map((room, index) => roomToMarket(room, 0, 0, positions[index]))
+  const preliminaryPositionRows = rooms.flatMap((room, index) => positionRowsFor(room, preliminaryMarkets[index], positions[index]))
   let activityRows: ActivityRow[] = []
   let tradersByRoom = new Map<string, Set<string>>()
   let txCountByRoom = new Map<string, number>()
+
+  onPartialState?.({
+    activityRows: [],
+    markets: [...preliminaryMarkets].reverse(),
+    positions: preliminaryPositionRows,
+  })
 
   try {
     const activity = await loadActivityLogs(roomLabels)
@@ -826,7 +839,6 @@ export async function loadOnchainState(walletAddress?: string): Promise<OnchainS
     // Markets should still render if a public RPC throttles log history.
   }
 
-  const positions = await Promise.all(rooms.map((room) => readPosition(room.roomId, walletAddress)))
   const markets = rooms.map((room, index) =>
     roomToMarket(room, txCountByRoom.get(room.roomId) ?? 0, tradersByRoom.get(room.roomId)?.size ?? 0, positions[index]),
   )

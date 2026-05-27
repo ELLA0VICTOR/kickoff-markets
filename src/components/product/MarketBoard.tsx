@@ -1,5 +1,6 @@
 import type { MatchMarket } from '../../data/markets'
 import type { ActionStatus } from '../../types/integration'
+import { LoadingMark } from './LoadingMark'
 import { MarketCard } from './MarketCard'
 
 type MarketBoardProps = {
@@ -27,6 +28,8 @@ export function MarketBoard({
   onCreateClick,
   onFaucetClick,
 }: MarketBoardProps) {
+  const hasMarkets = markets.length > 0
+
   return (
     <main className="market-board">
       <div className="board-header">
@@ -49,20 +52,28 @@ export function MarketBoard({
 
       {actionStatus.state !== 'idle' ? (
         <div className={`action-notice board-notice state-${actionStatus.state}`}>
-          <span>{actionStatus.state}</span>
+          <span>
+            {actionStatus.state === 'pending' ? <LoadingMark size="small" label="Transaction pending" /> : null}
+            {actionStatus.state}
+          </span>
           <strong>{actionStatus.message}</strong>
         </div>
       ) : null}
 
-      {loading ? (
-        <div className="empty-state">
-          <h2>Reading X Layer rooms</h2>
+      {loading && hasMarkets ? (
+        <div className="sync-strip">
+          <LoadingMark size="small" label="Syncing X Layer rooms" />
+          <span>Syncing X Layer rooms</span>
         </div>
-      ) : loadError ? (
-        <div className="empty-state">
-          <h2>{loadError}</h2>
+      ) : null}
+
+      {loadError && hasMarkets ? (
+        <div className="sync-strip state-error">
+          <span>{loadError}</span>
         </div>
-      ) : markets.length > 0 ? (
+      ) : null}
+
+      {hasMarkets ? (
         <div className="market-grid">
           {markets.map((market) => (
             <MarketCard
@@ -72,6 +83,15 @@ export function MarketBoard({
               onSelect={onMarketSelect}
             />
           ))}
+        </div>
+      ) : loading ? (
+        <div className="empty-state">
+          <LoadingMark label="Reading X Layer rooms" />
+          <h2>Reading X Layer rooms</h2>
+        </div>
+      ) : loadError ? (
+        <div className="empty-state">
+          <h2>{loadError}</h2>
         </div>
       ) : (
         <div className="empty-state">

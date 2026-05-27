@@ -7,6 +7,7 @@ import { formatCurrency, formatNumber } from '../../lib/format'
 import { countdownLabel, formatUtcTime } from '../../lib/matchTime'
 import { getOracleStatus } from '../../lib/oracleStatus'
 import type { ActionStatus } from '../../types/integration'
+import { LoadingMark } from './LoadingMark'
 import { MatchPoster } from './MatchPoster'
 
 type DetailTab = 'Trade' | 'Liquidity' | 'Hook' | 'Activity'
@@ -329,7 +330,10 @@ function ActionNotice({ status }: { status: ActionStatus }) {
 
   return (
     <div className={`action-notice state-${status.state}`}>
-      <span>{status.state}</span>
+      <span>
+        {status.state === 'pending' ? <LoadingMark size="small" label="Transaction pending" /> : null}
+        {status.state}
+      </span>
       <strong>{status.message}</strong>
       {txUrl ? (
         <a href={txUrl} target="_blank" rel="noreferrer">
