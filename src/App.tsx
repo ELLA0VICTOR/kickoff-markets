@@ -40,7 +40,7 @@ function matchesTab(market: MatchMarket, tab: HomeTab, portfolioPools: Set<strin
   if (tab === 'All') return true
   if (tab === 'Live') return market.status === 'live'
   if (tab === 'Upcoming') return market.status === 'open'
-  if (tab === 'Settling') return market.status === 'settling' || market.status === 'settled' || market.status === 'cancelled'
+  if (tab === 'Settling') return market.status === 'settling'
   if (tab === 'Portfolio') return portfolioPools.has(market.pool)
 
   return false
