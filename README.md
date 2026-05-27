@@ -355,10 +355,12 @@ VITE_MATCH_ORACLE_AGENT_ADDRESS=0xYourMatchOracleAgent
 ORACLE_PROVIDER=manual
 ORACLE_RESULTS_FILE=scripts/oracle-results.json
 ORACLE_POLL_SECONDS=60
-ORACLE_HEALTH_PORT=3001
+ORACLE_HEALTH_PORT=
 ORACLE_FOOTBALL_DATA_COMPETITION=WC
 X_LAYER_RPC_URL=https://testrpc.xlayer.tech
 ```
+
+On Render, prefer a Background Worker for `npm run oracle:watch`. If you deploy it as a Web Service, leave `ORACLE_HEALTH_PORT` empty; the worker automatically binds to Render's injected `PORT` and serves `/health`, `/ready`, and `/`.
 
 For production-style automation, use a backend-only operator wallet with limited gas funds:
 

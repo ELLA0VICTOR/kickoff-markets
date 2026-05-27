@@ -24,7 +24,7 @@ const NETWORKS = {
   testnet: {
     id: 1952,
     name: 'X Layer Testnet',
-    rpcUrls: ['https://testrpc.xlayer.tech/terigon', 'https://xlayertestrpc.okx.com/terigon'],
+    rpcUrls: ['https://testrpc.xlayer.tech', 'https://testrpc.xlayer.tech/terigon', 'https://xlayertestrpc.okx.com/terigon'],
   },
 }
 
@@ -101,18 +101,14 @@ const root = process.cwd()
 const env = loadEnv(root)
 const networkId = env.VITE_X_LAYER_NETWORK?.trim().toLowerCase() === 'mainnet' ? 'mainnet' : 'testnet'
 const network = NETWORKS[networkId]
-const rpcUrls = env.X_LAYER_RPC_URL?.trim()
-  ? [env.X_LAYER_RPC_URL.trim()]
-  : env.VITE_X_LAYER_RPC_URL?.trim()
-    ? [env.VITE_X_LAYER_RPC_URL.trim()]
-    : network.rpcUrls
+const rpcUrls = Array.from(new Set([env.X_LAYER_RPC_URL?.trim(), env.VITE_X_LAYER_RPC_URL?.trim(), ...network.rpcUrls].filter(Boolean)))
 const marketsAddress = env.VITE_KICKOFF_MARKETS_ADDRESS?.trim()
 const oracleAgentAddress = env.VITE_MATCH_ORACLE_AGENT_ADDRESS?.trim()
 const providerName = env.ORACLE_PROVIDER?.trim().toLowerCase() || 'manual'
 const resultGraceMinutes = Number(env.ORACLE_RESULT_GRACE_MINUTES || 30)
 const matchMinutes = Number(env.ORACLE_MATCH_MINUTES || 90)
 const pollSeconds = Math.max(10, Number(readArg('--poll-seconds') || env.ORACLE_POLL_SECONDS || 60))
-const healthPort = Number(readArg('--health-port') || env.ORACLE_HEALTH_PORT || 0)
+const healthPort = Number(readArg('--health-port') || env.ORACLE_HEALTH_PORT || env.PORT || 0)
 const maxRuns = Number(readArg('--max-runs') || env.ORACLE_MAX_RUNS || 0)
 const probeCompetition = readArg('--competition') || env.ORACLE_PROBE_COMPETITION || 'WC'
 const probeDateFrom = readArg('--date-from') || env.ORACLE_PROBE_DATE_FROM || '2026-06-11'
