@@ -128,6 +128,10 @@ async function switchProviderToXLayer(provider: EthereumProvider) {
     })
   } catch (error) {
     if (typeof error === 'object' && error && 'code' in error && Number(error.code) === 4902) {
+      if (isOkxProvider(provider)) {
+        throw new Error(X_LAYER_SWITCH_MESSAGE, { cause: error })
+      }
+
       try {
         await provider.request({
           method: 'wallet_addEthereumChain',
