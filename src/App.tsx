@@ -34,6 +34,7 @@ import {
   switchToXLayer,
   type WalletSession,
   type WalletStatus,
+  OKX_RPC_RECOVERY_MESSAGE,
 } from './lib/wallet'
 import type { ActionStatus } from './types/integration'
 import { readCachedOnchainState, writeCachedOnchainState } from './lib/onchainCache'
@@ -60,6 +61,11 @@ function matchesSearch(market: MatchMarket, query: string) {
 
 function actionMessage(action: string, approvalHash?: string) {
   return approvalHash ? `Approval confirmed. ${action} submitted to X Layer.` : `${action} submitted to X Layer.`
+}
+
+function actionErrorMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.toLowerCase().includes('coinid') ? OKX_RPC_RECOVERY_MESSAGE : error instanceof Error ? error.message : fallback
 }
 
 function App() {
@@ -262,7 +268,7 @@ function App() {
         setWalletStatus('connected')
       }
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Network switch failed.')
+      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Network switch failed.' })
     }
   }
 
@@ -327,7 +333,7 @@ function App() {
         message: 'Test collateral claimed on X Layer.',
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Collateral faucet failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Collateral faucet failed.') })
     }
   }
 
@@ -352,7 +358,7 @@ function App() {
         message: 'Room created on X Layer.',
       })
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Room creation failed.'
+      const message = actionErrorMessage(error, 'Room creation failed.')
       setActionStatus({ state: 'error', message })
       if (error instanceof Error) throw error
       throw new Error(message, { cause: error })
@@ -372,7 +378,7 @@ function App() {
         message: actionMessage('Trade', result.approvalHash),
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Trade failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Trade failed.') })
     }
   }
 
@@ -389,7 +395,7 @@ function App() {
         message: actionMessage('Liquidity', result.approvalHash),
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Liquidity add failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Liquidity add failed.') })
     }
   }
 
@@ -406,7 +412,7 @@ function App() {
         message: 'Match Clock state updated on X Layer.',
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Clock update failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Clock update failed.') })
     }
   }
 
@@ -423,7 +429,7 @@ function App() {
         message: 'Settlement proposed. Dispute window is open.',
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Settlement proposal failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Settlement proposal failed.') })
     }
   }
 
@@ -440,7 +446,7 @@ function App() {
         message: 'Settlement disputed. Resolver action is required.',
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Dispute failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Dispute failed.') })
     }
   }
 
@@ -457,7 +463,7 @@ function App() {
         message: 'Settlement finalized. Claims are now available.',
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Finalize failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Finalize failed.') })
     }
   }
 
@@ -474,7 +480,7 @@ function App() {
         message: 'Dispute resolved. Claims are now available.',
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Dispute resolution failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Dispute resolution failed.') })
     }
   }
 
@@ -491,7 +497,7 @@ function App() {
         message: 'Claim paid from escrow.',
       })
     } catch (error) {
-      setActionStatus({ state: 'error', message: error instanceof Error ? error.message : 'Claim failed.' })
+      setActionStatus({ state: 'error', message: actionErrorMessage(error, 'Claim failed.') })
     }
   }
 

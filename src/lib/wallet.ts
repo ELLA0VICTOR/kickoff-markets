@@ -51,6 +51,8 @@ const X_LAYER_ADD_CHAIN = {
 }
 
 const X_LAYER_SWITCH_MESSAGE = `OKX Wallet did not complete the ${X_LAYER_NETWORK.name} switch. In the OKX Connect panel, open the Ethereum network dropdown and choose ${X_LAYER_NETWORK.name}.`
+export const OKX_RPC_RECOVERY_MESSAGE =
+  'OKX rejected the transaction on its selected RPC. In the OKX RPC picker, choose https://testrpc.xlayer.tech, then retry.'
 
 function isProvider(value: unknown): value is EthereumProvider {
   return typeof value === 'object' && value !== null && 'request' in value && typeof value.request === 'function'
@@ -128,10 +130,6 @@ async function switchProviderToXLayer(provider: EthereumProvider) {
     })
   } catch (error) {
     if (typeof error === 'object' && error && 'code' in error && Number(error.code) === 4902) {
-      if (isOkxProvider(provider)) {
-        throw new Error(X_LAYER_SWITCH_MESSAGE, { cause: error })
-      }
-
       try {
         await provider.request({
           method: 'wallet_addEthereumChain',
