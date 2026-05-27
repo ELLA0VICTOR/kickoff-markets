@@ -14,14 +14,22 @@ type ProviderRequestArgs = {
 
 export type EthereumProvider = {
   request<T = unknown>(args: ProviderRequestArgs): Promise<T>
+  isOkxWallet?: boolean
+  isOKExWallet?: boolean
+  isMetaMask?: boolean
+  providers?: EthereumProvider[]
   on?(event: 'accountsChanged' | 'chainChanged', handler: (...args: unknown[]) => void): void
   removeListener?(event: 'accountsChanged' | 'chainChanged', handler: (...args: unknown[]) => void): void
+}
+
+type WalletNamespace = EthereumProvider & {
+  ethereum?: EthereumProvider
 }
 
 type WalletWindow = Window &
   typeof globalThis & {
     ethereum?: EthereumProvider
-    okxwallet?: EthereumProvider
+    okxwallet?: WalletNamespace
   }
 
 const X_LAYER_CHAIN = {
@@ -36,21 +44,48 @@ const X_LAYER_CHAIN = {
   blockExplorerUrls: X_LAYER_NETWORK.blockExplorerUrls,
 }
 
-const X_LAYER_SWITCH_MESSAGE =
-  `${X_LAYER_NETWORK.name} is built into OKX Wallet. Enable that network in the wallet, then switch again.`
+const X_LAYER_ADD_CHAIN = {
+  ...X_LAYER_CHAIN,
+  rpcUrls: [X_LAYER_NETWORK.rpcUrls[0]],
+  blockExplorerUrls: [X_LAYER_NETWORK.blockExplorerUrls[0]],
+}
 
-export function getWalletProvider() {
-  if (typeof window === 'undefined') return undefined
+const X_LAYER_SWITCH_MESSAGE = `OKX Wallet did not complete the ${X_LAYER_NETWORK.name} switch. In the OKX Connect panel, open the Ethereum network dropdown and choose ${X_LAYER_NETWORK.name}.`
+
+function isProvider(value: unknown): value is EthereumProvider {
+  return typeof value === 'object' && value !== null && 'request' in value && typeof value.request === 'function'
+}
+
+function uniqueProviders(providers: Array<EthereumProvider | undefined>) {
+  return providers.filter((provider, index): provider is EthereumProvider => Boolean(provider) && providers.indexOf(provider) === index)
+}
+
+function walletProviderCandidates() {
+  if (typeof window === 'undefined') return []
 
   const walletWindow = window as WalletWindow
-  return walletWindow.okxwallet || walletWindow.ethereum
+  const ethereumProviders = walletWindow.ethereum?.providers ?? []
+  const okxEthereum = walletWindow.okxwallet?.ethereum
+  const okxWallet = isProvider(walletWindow.okxwallet) ? walletWindow.okxwallet : undefined
+
+  return uniqueProviders([
+    okxEthereum,
+    okxWallet,
+    ...ethereumProviders.filter(isOkxProvider),
+    walletWindow.ethereum,
+    ...ethereumProviders,
+  ])
+}
+
+export function getWalletProvider() {
+  return walletProviderCandidates()[0]
 }
 
 function isOkxProvider(provider: EthereumProvider) {
   if (typeof window === 'undefined') return false
 
   const walletWindow = window as WalletWindow
-  return walletWindow.okxwallet === provider
+  return walletWindow.okxwallet === provider || walletWindow.okxwallet?.ethereum === provider || Boolean(provider.isOkxWallet || provider.isOKExWallet)
 }
 
 export function shortAddress(address: string) {
@@ -85,7 +120,7 @@ export async function readInjectedWallet(provider: EthereumProvider): Promise<Wa
   return { address, chainId }
 }
 
-export async function switchToXLayer(provider: EthereumProvider) {
+async function switchProviderToXLayer(provider: EthereumProvider) {
   try {
     await provider.request({
       method: 'wallet_switchEthereumChain',
@@ -93,21 +128,38 @@ export async function switchToXLayer(provider: EthereumProvider) {
     })
   } catch (error) {
     if (typeof error === 'object' && error && 'code' in error && Number(error.code) === 4902) {
-      if (isOkxProvider(provider)) {
-        throw new Error(X_LAYER_SWITCH_MESSAGE, { cause: error })
+      try {
+        await provider.request({
+          method: 'wallet_addEthereumChain',
+          params: [X_LAYER_ADD_CHAIN],
+        })
+        await provider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: X_LAYER_CHAIN.chainId }],
+        })
+        return
+      } catch (addError) {
+        throw new Error(X_LAYER_SWITCH_MESSAGE, { cause: addError })
       }
-
-      await provider.request({
-        method: 'wallet_addEthereumChain',
-        params: [X_LAYER_CHAIN],
-      })
-      await provider.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: X_LAYER_CHAIN.chainId }],
-      })
-      return
     }
 
     throw error
   }
+}
+
+export async function switchToXLayer(provider: EthereumProvider) {
+  const errors: unknown[] = []
+  const providers = uniqueProviders([provider, ...walletProviderCandidates()])
+
+  for (const candidate of providers) {
+    try {
+      await switchProviderToXLayer(candidate)
+      const chainId = await candidate.request<string>({ method: 'eth_chainId' })
+      if (isXLayer(chainId)) return candidate
+    } catch (error) {
+      errors.push(error)
+    }
+  }
+
+  throw new Error(X_LAYER_SWITCH_MESSAGE, { cause: errors[0] })
 }

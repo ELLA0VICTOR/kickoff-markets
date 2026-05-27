@@ -244,8 +244,8 @@ function App() {
     }
 
     try {
-      await switchToXLayer(provider)
-      const session = await readInjectedWallet(provider)
+      const switchedProvider = await switchToXLayer(provider)
+      const session = await readInjectedWallet(switchedProvider)
       if (session) {
         setWalletSession(session)
         setWalletStatus('connected')
@@ -289,8 +289,8 @@ function App() {
       setWalletStatus('connected')
     }
 
-    await switchToXLayer(provider)
-    const refreshed = await readInjectedWallet(provider)
+    const switchedProvider = await switchToXLayer(provider)
+    const refreshed = await readInjectedWallet(switchedProvider)
     if (refreshed) {
       setWalletSession(refreshed)
       session = refreshed
@@ -300,7 +300,7 @@ function App() {
       throw new Error('Wallet did not switch to X Layer Testnet.')
     }
 
-    return { provider, address: session.address }
+    return { provider: switchedProvider, address: session.address }
   }
 
   async function claimCollateral() {
