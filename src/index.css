@@ -293,6 +293,77 @@ button.network-chip:hover,
   background: rgba(16, 185, 129, 0.08);
 }
 
+.action-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 140;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 14px;
+  width: min(420px, calc(100vw - 28px));
+  border: 1px solid var(--border);
+  padding: 14px;
+  background: var(--bg-darker);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+}
+
+.action-toast.state-success {
+  border-color: var(--accent-dim);
+}
+
+.action-toast.state-error {
+  border-color: var(--danger);
+}
+
+.action-toast-copy {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.action-toast-copy span {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  gap: 8px;
+  color: var(--label);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.action-toast-copy strong {
+  color: var(--text-bright);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.action-toast-copy a {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  gap: 6px;
+  color: var(--value-bright);
+  font-size: 12px;
+}
+
+.action-toast button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.action-toast button:hover {
+  color: var(--value-bright);
+  border-color: var(--accent-dim);
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -793,16 +864,14 @@ button.network-chip:hover,
   background: var(--bg-darker);
 }
 
-.integration-strip span,
-.action-notice span {
+.integration-strip span {
   color: var(--label);
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
 }
 
-.integration-strip strong,
-.action-notice strong {
+.integration-strip strong {
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
@@ -1067,42 +1136,6 @@ button.network-chip:hover,
 .ticket-summary strong {
   color: var(--value);
   text-align: right;
-}
-
-.action-notice {
-  display: grid;
-  gap: 6px;
-  border: 1px solid var(--border);
-  padding: 12px;
-  background: var(--bg-darker);
-}
-
-.action-notice span {
-  display: inline-flex;
-  width: max-content;
-  align-items: center;
-  gap: 8px;
-}
-
-.action-notice.state-success {
-  border-color: var(--accent-dim);
-}
-
-.action-notice.state-error {
-  border-color: var(--danger);
-}
-
-.action-notice a {
-  display: inline-flex;
-  width: max-content;
-  align-items: center;
-  gap: 6px;
-  color: var(--value-bright);
-  font-size: 12px;
-}
-
-.board-notice {
-  margin: 18px 24px 0;
 }
 
 .sync-strip {
@@ -1692,6 +1725,12 @@ button.network-chip:hover,
 
   .footer-brand p {
     font-size: 15px;
+  }
+
+  .action-toast {
+    right: 12px;
+    bottom: 12px;
+    width: calc(100vw - 24px);
   }
 }
 

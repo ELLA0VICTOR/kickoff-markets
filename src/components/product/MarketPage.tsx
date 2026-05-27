@@ -1,13 +1,10 @@
-import { ArrowLeft, CheckCircle2, Clock3, Droplets, ExternalLink, Radio, ShieldCheck } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, Clock3, Droplets, Radio, ShieldCheck } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { explorerTxUrl } from '../../config/contracts'
 import type { ActivityRow, FinalMarketSettlement, HookStep, MarketPhase, MatchMarket, PositionRow } from '../../data/markets'
 import { formatCurrency, formatNumber } from '../../lib/format'
 import { countdownLabel, formatUtcTime } from '../../lib/matchTime'
 import { getOracleStatus } from '../../lib/oracleStatus'
-import type { ActionStatus } from '../../types/integration'
-import { LoadingMark } from './LoadingMark'
 import { MatchPoster } from './MatchPoster'
 
 type DetailTab = 'Trade' | 'Liquidity' | 'Hook' | 'Activity'
@@ -15,7 +12,6 @@ type DetailTab = 'Trade' | 'Liquidity' | 'Hook' | 'Activity'
 type MarketPageProps = {
   market: MatchMarket
   activityRows: ActivityRow[]
-  actionStatus: ActionStatus
   contractReady: boolean
   hookSteps: HookStep[]
   positions: PositionRow[]
@@ -36,7 +32,6 @@ const detailTabs: DetailTab[] = ['Trade', 'Liquidity', 'Hook', 'Activity']
 export function MarketPage({
   market,
   activityRows,
-  actionStatus,
   contractReady,
   hookSteps,
   positions,
@@ -195,7 +190,6 @@ export function MarketPage({
             >
               Place trade
             </button>
-            <ActionNotice status={actionStatus} />
           </aside>
         </section>
       ) : null}
@@ -229,7 +223,6 @@ export function MarketPage({
               ) : null}
             </div>
           ))}
-          <ActionNotice status={actionStatus} />
         </section>
       ) : null}
 
@@ -292,7 +285,6 @@ export function MarketPage({
               </button>
             </div>
           </div>
-          <ActionNotice status={actionStatus} />
         </section>
       ) : null}
 
@@ -320,28 +312,6 @@ export function MarketPage({
         </section>
       ) : null}
     </main>
-  )
-}
-
-function ActionNotice({ status }: { status: ActionStatus }) {
-  if (status.state === 'idle') return null
-
-  const txUrl = explorerTxUrl(status.txHash)
-
-  return (
-    <div className={`action-notice state-${status.state}`}>
-      <span>
-        {status.state === 'pending' ? <LoadingMark size="small" label="Transaction pending" /> : null}
-        {status.state}
-      </span>
-      <strong>{status.message}</strong>
-      {txUrl ? (
-        <a href={txUrl} target="_blank" rel="noreferrer">
-          View tx
-          <ExternalLink size={13} strokeWidth={1.8} />
-        </a>
-      ) : null}
-    </div>
   )
 }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AppTopbar } from './components/product/AppTopbar'
+import { ActionToast } from './components/product/ActionToast'
 import { CreateRoomModal } from './components/product/CreateRoomModal'
 import { Footer } from './components/product/Footer'
 import { HowItWorksModal } from './components/product/HowItWorksModal'
@@ -189,6 +190,16 @@ function App() {
     window.addEventListener('pointerdown', closeMenu)
     return () => window.removeEventListener('pointerdown', closeMenu)
   }, [walletMenuOpen])
+
+  useEffect(() => {
+    if (actionStatus.state !== 'success' && actionStatus.state !== 'error') return
+
+    const timer = window.setTimeout(() => {
+      setActionStatus({ state: 'idle' })
+    }, 6500)
+
+    return () => window.clearTimeout(timer)
+  }, [actionStatus.state, actionStatus.message, actionStatus.txHash])
 
   const portfolioPools = useMemo(() => new Set(positionList.map((position) => position.market)), [positionList])
 
@@ -488,7 +499,6 @@ function App() {
     <>
       <MarketTabs activeTab={activeTab} onTabChange={setActiveTab} />
       <MarketBoard
-        actionStatus={actionStatus}
         collateralBalance={collateralBalance}
         contractReady={contractReady}
         loading={loadingState}
@@ -506,6 +516,7 @@ function App() {
     <div className="app-shell">
       <HowItWorksModal open={howItWorksOpen} onClose={() => setHowItWorksOpen(false)} />
       <CreateRoomModal open={createRoomOpen} onClose={() => setCreateRoomOpen(false)} onCreate={createRoom} />
+      <ActionToast status={actionStatus} onDismiss={() => setActionStatus({ state: 'idle' })} />
       <AppTopbar
         isXLayer={isXLayer(walletSession?.chainId)}
         query={query}
@@ -525,7 +536,6 @@ function App() {
       {detailMarketId && selectedMarket ? (
         <MarketPage
           activityRows={activityList.filter((row) => row.market === selectedMarket.pool)}
-          actionStatus={actionStatus}
           contractReady={contractReady}
           hookSteps={hookSteps}
           market={selectedMarket}

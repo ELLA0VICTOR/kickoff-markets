@@ -1,10 +1,8 @@
 import type { MatchMarket } from '../../data/markets'
-import type { ActionStatus } from '../../types/integration'
 import { LoadingMark } from './LoadingMark'
 import { MarketCard } from './MarketCard'
 
 type MarketBoardProps = {
-  actionStatus: ActionStatus
   collateralBalance?: number
   contractReady: boolean
   loading: boolean
@@ -17,7 +15,6 @@ type MarketBoardProps = {
 }
 
 export function MarketBoard({
-  actionStatus,
   collateralBalance,
   contractReady,
   loading,
@@ -49,16 +46,6 @@ export function MarketBoard({
           </button>
         </div>
       </div>
-
-      {actionStatus.state !== 'idle' ? (
-        <div className={`action-notice board-notice state-${actionStatus.state}`}>
-          <span>
-            {actionStatus.state === 'pending' ? <LoadingMark size="small" label="Transaction pending" /> : null}
-            {actionStatus.state}
-          </span>
-          <strong>{actionStatus.message}</strong>
-        </div>
-      ) : null}
 
       {loading && hasMarkets ? (
         <div className="sync-strip">
